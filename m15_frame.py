@@ -15,8 +15,8 @@ M15_FRAME = {
     # For the config, we'll use Stangg's as a representative example,
     # but these are often overridden by CardBuilder using actual card data.
     "art_x": 0.07661691542288557,
-    "art_y": 0.09132906894100924,
-    "art_zoom": 2.928,
+    "art_y": 0.09168443496801705,
+    "art_zoom": 3.027,
     "art_rotate": "0",
 
     "set_symbol_x": 0.8537313432835821,

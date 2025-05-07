@@ -4,6 +4,10 @@ Module for building card data structure from Scryfall data
 """
 import logging
 from typing import Dict, List, Optional, Union
+import io # For handling image bytes
+
+import requests # For fetching image
+from PIL import Image # For getting image dimensions
 
 from config import (
     ccProto, ccHost, ccPort,
@@ -17,7 +21,7 @@ logger = logging.getLogger(__name__)
 class CardBuilder:
     """Class for building card data from Scryfall data"""
     
-    def __init__(self, frame_type: str, frame_config: Dict, frame_set: str = "regular", legendary_crowns: bool = False):
+    def __init__(self, frame_type: str, frame_config: Dict, frame_set: str = "regular", legendary_crowns: bool = False, auto_fit_art: bool = False):
         """Initialize the CardBuilder with the frame type and configuration.
         
         Args:
@@ -29,6 +33,86 @@ class CardBuilder:
         self.frame_config = frame_config
         self.frame_set = frame_set
         self.legendary_crowns = legendary_crowns
+        self.auto_fit_art = auto_fit_art
+
+# --- Inside the CardBuilder class in card_builder.py ---
+
+    def _calculate_auto_fit_art_params(self, art_url: str) -> Optional[Dict[str, float]]:
+        """
+        Calculates artX, artY, and artZoom to make art cover the art box.
+        Returns a dict with {'artX', 'artY', 'artZoom'} or None if an error occurs.
+        """
+        if not art_url:
+            logger.warning("No art URL provided for auto-fit calculation.")
+            return None
+
+        try:
+            # Fetch image data
+            response = requests.get(art_url, timeout=10)
+            response.raise_for_status() # Raise an exception for bad status codes
+            
+            # Get image dimensions using Pillow
+            img = Image.open(io.BytesIO(response.content))
+            art_natural_width, art_natural_height = img.width, img.height
+            img.close()
+
+            if art_natural_width == 0 or art_natural_height == 0:
+                logger.warning(f"Art image from {art_url} has zero dimensions.")
+                return None
+
+            # Get card and art box dimensions from frame config
+            # These are the absolute pixel dimensions of the card output
+            card_total_width = self.frame_config.get("width")
+            card_total_height = self.frame_config.get("height")
+            
+            # These are relative (0-1) bounds of the art box within the card
+            art_bounds_config = self.frame_config.get("art_bounds")
+
+            if not all([card_total_width, card_total_height, art_bounds_config]):
+                logger.warning("Frame configuration missing width, height, or art_bounds for auto-fit.")
+                return None
+
+            art_box_relative_x = art_bounds_config.get("x", 0)
+            art_box_relative_y = art_bounds_config.get("y", 0)
+            art_box_relative_width = art_bounds_config.get("width", 1)
+            art_box_relative_height = art_bounds_config.get("height", 1)
+
+            # Absolute dimensions of the target art box on the card
+            target_abs_art_box_width = art_box_relative_width * card_total_width
+            target_abs_art_box_height = art_box_relative_height * card_total_height
+            
+            # Calculate scale to make art cover the box
+            scale_x = target_abs_art_box_width / art_natural_width
+            scale_y = target_abs_art_box_height / art_natural_height
+            
+            calculated_zoom = max(scale_x, scale_y)
+
+            # Calculate new artX and artY (relative to card dimensions 0-1)
+            # These formulas match CardConjurer's autoFitArt()
+            # (target_abs_art_box_width - art_natural_width * calculated_zoom) is the horizontal "empty space" (could be negative if cropping)
+            # We divide by 2 to center it, then divide by card_total_width to make it relative again.
+            calculated_art_x = art_box_relative_x + \
+                               (target_abs_art_box_width - art_natural_width * calculated_zoom) / 2 / card_total_width
+            
+            calculated_art_y = art_box_relative_y + \
+                               (target_abs_art_box_height - art_natural_height * calculated_zoom) / 2 / card_total_height
+            
+            logger.info(f"Auto-fit for {art_url}: Zoom={calculated_zoom:.4f}, X={calculated_art_x:.4f}, Y={calculated_art_y:.4f}")
+            return {
+                "artX": calculated_art_x,
+                "artY": calculated_art_y,
+                "artZoom": calculated_zoom
+            }
+
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Error fetching art image from {art_url}: {e}")
+            return None
+        except IOError as e: # Pillow error
+            logger.error(f"Error processing art image from {art_url} with Pillow: {e}")
+            return None
+        except Exception as e:
+            logger.error(f"Unexpected error during auto-fit art calculation for {art_url}: {e}")
+            return None
     
     def build_frame_path(self, color_code: str) -> str:
         """Build the frame path based on the frame type and color code.
@@ -761,6 +845,23 @@ class CardBuilder:
                 if 'image_uris' in face and 'art_crop' in face['image_uris']:
                     art_crop_url = face['image_uris']['art_crop']
                     break
+
+        # Default art parameters from frame config
+        art_x = self.frame_config.get("art_x", 0.0)
+        art_y = self.frame_config.get("art_y", 0.0)
+        art_zoom = self.frame_config.get("art_zoom", 1.0)
+        art_rotate = self.frame_config.get("art_rotate", "0") # Keep existing rotate
+
+        # If auto_fit_art is enabled, try to calculate new parameters
+        if self.auto_fit_art and art_crop_url:
+            logger.info(f"Attempting auto-fit art for {card_name} using URL: {art_crop_url}")
+            auto_fit_params = self._calculate_auto_fit_art_params(art_crop_url)
+            if auto_fit_params:
+                art_x = auto_fit_params["artX"]
+                art_y = auto_fit_params["artY"]
+                art_zoom = auto_fit_params["artZoom"]
+            else:
+                logger.warning(f"Auto-fit art failed for {card_name}, using default art parameters from frame config.")
         
         # Build the card data object
         card_obj = {
@@ -772,9 +873,9 @@ class CardBuilder:
                 "marginY": self.frame_config["margin_y"],
                 "frames": frames_for_card_obj,
                 "artSource": art_crop_url,
-                "artX": self.frame_config["art_x"],
-                "artY": self.frame_config["art_y"],
-                "artZoom": self.frame_config["art_zoom"],
+                "artX": art_x,
+                "artY": art_y,
+                "artZoom": art_zoom,
                 "artRotate": self.frame_config["art_rotate"],
                 "setSymbolSource": f"{ccProto}://{ccHost}:{ccPort}/img/setSymbols/official/{set_code}-{rarity_code}.svg",
                 "setSymbolX": self.frame_config["set_symbol_x"],

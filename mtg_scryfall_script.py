@@ -33,6 +33,7 @@ def main():
     parser.add_argument('--frame', '-f', help='Frame type to use', default='seventh', choices=['seventh', '8th', 'm15'])
     parser.add_argument('--frame_set', '-s', help='Frame set to use (only for seventh)', default='regular')
     parser.add_argument('--legendary_crowns', action='store_true', help='Add legendary crowns for M15 frame (if applicable)') # New
+    parser.add_argument('--auto_fit_art', action='store_true', help='Automatically calculate art X, Y, and Zoom to fit frame') # NEW
     
     args = parser.parse_args()
     
@@ -44,7 +45,7 @@ def main():
     # If an invalid choice is given, argparse will exit with an error message.
     # So, the explicit if check can be removed if 'choices' is used.
     
-    processor = ScryfallCardProcessor(args.input_file, args.frame, args.frame_set, args.legendary_crowns)
+    processor = ScryfallCardProcessor(args.input_file, args.frame, args.frame_set, args.legendary_crowns, args.auto_fit_art)
     result = processor.process_cards()
     processor.save_output(args.output_file, result)
 

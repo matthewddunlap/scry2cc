@@ -17,15 +17,16 @@ logger = logging.getLogger(__name__)
 class ScryfallCardProcessor:
     """Main class for processing cards from Scryfall to CardConjurer format"""
     
-    def __init__(self, input_file: str, frame_type: str = "seventh", frame_set: str = "regular", legendary_crowns: bool = False):
+    def __init__(self, input_file: str, frame_type: str = "seventh", frame_set: str = "regular", legendary_crowns: bool = False, auto_fit_art: bool = False):
         self.input_file = input_file
         self.frame_type = frame_type
         self.frame_set = frame_set
-        self.legendary_crowns = legendary_crowns # Store i
+        self.legendary_crowns = legendary_crowns # Store
+        self.auto_fit_art = auto_fit_art # Store it
         self.frame_config = get_frame_config(frame_type)
         self.scryfall_api = ScryfallAPI()
         self.color_detector = ColorDetector()
-        self.card_builder = CardBuilder(frame_type, self.frame_config, frame_set, self.legendary_crowns)
+        self.card_builder = CardBuilder(frame_type, self.frame_config, frame_set, self.legendary_crowns, self.auto_fit_art)
     
     def load_cards(self) -> List[str]:
         """Load card names from input file."""

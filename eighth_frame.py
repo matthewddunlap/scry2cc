@@ -9,7 +9,7 @@ EIGHTH_FRAME = {
     "margin_y": 0,
     "art_x": 0.0880597014925373,
     "art_y": 0.10199004975124377,
-    "art_zoom": 2.9410000000000003,
+    "art_zoom": 2.941,
     "art_rotate": "0",
     "set_symbol_x": 0.8497512437810946,
     "set_symbol_y": 0.5689410092395167,
