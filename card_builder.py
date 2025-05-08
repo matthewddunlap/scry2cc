@@ -1077,8 +1077,8 @@ class CardBuilder:
             "data": {
                 "width": self.frame_config["width"],
                 "height": self.frame_config["height"],
-                "marginX": self.frame_config["margin_x"],
-                "marginY": self.frame_config["margin_y"],
+                "marginX": self.frame_config.get("margin_x", 0), # Using .get for safety on optional keys
+                "marginY": self.frame_config.get("margin_y", 0),
                 "frames": frames_for_card_obj,
                 "artSource": art_crop_url,
                 "artX": art_x,
@@ -1086,9 +1086,9 @@ class CardBuilder:
                 "artZoom": art_zoom,
                 "artRotate": self.frame_config["art_rotate"],
                 "setSymbolSource": f"{ccProto}://{ccHost}:{ccPort}/img/setSymbols/official/{set_code_for_symbol_url}-{rarity_code_for_symbol}.svg",
-                "setSymbolX": self.frame_config["set_symbol_x"],
-                "setSymbolY": self.frame_config["set_symbol_y"],
-                "setSymbolZoom": self.frame_config["set_symbol_zoom"],
+                "setSymbolX":set_symbol_x,
+                "setSymbolY": set_symbol_y,
+                "setSymbolZoom": set_symbol_zoom,
                 "watermarkSource": f"{ccProto}://{ccHost}:{ccPort}/{self.frame_config['watermark_source']}",
                 "watermarkX": self.frame_config["watermark_x"],
                 "watermarkY": self.frame_config["watermark_y"],
@@ -1100,37 +1100,37 @@ class CardBuilder:
                 "showsFlavorBar": self.frame_config.get("shows_flavor_bar", False), # Use from config
                 "manaSymbols": mana_symbols,
                 "infoYear": DEFAULT_INFO_YEAR,
-                "margins": False,
-                "bottomInfoTranslate": {"x": 0, "y": 0},
-                "bottomInfoRotate": 0,
-                "bottomInfoZoom": 1,
-                "bottomInfoColor": "white",
-                "onload": None,
-                "hideBottomInfoBorder": False,
+                "margins": self.frame_config.get("margins", False),
+                "bottomInfoTranslate": self.frame_config.get("bottomInfoTranslate", {"x": 0, "y": 0}),
+                "bottomInfoRotate": self.frame_config.get("bottomInfoRotate", 0),
+                "bottomInfoZoom": self.frame_config.get("bottomInfoZoom", 1),
+                "bottomInfoColor": self.frame_config.get("bottomInfoColor", "white"),
+                "onload": self.frame_config.get("onload", None),
+                "hideBottomInfoBorder": self.frame_config.get("hideBottomInfoBorder", False),
                 "showsFlavorBar": False,
-                "bottomInfo": self.frame_config["bottom_info"],
-                "artBounds": self.frame_config["art_bounds"],
-                "setSymbolBounds": self.frame_config["set_symbol_bounds"],
-                "watermarkBounds": self.frame_config["watermark_bounds"],
+                "bottomInfo": self.frame_config.get("bottom_info", {}),
+                "artBounds": self.frame_config.get("art_bounds", {}),
+                "setSymbolBounds": self.frame_config.get("set_symbol_bounds", {}),
+                "watermarkBounds": self.frame_config.get("watermark_bounds", {}),
                 "text": {
                     "mana": {
-                        **self.frame_config["text"]["mana"],
+                        **self.frame_config.get("text", {}).get("mana", {}),
                         "text": card_data.get('mana_cost', '')
                     },
                     "title": {
-                        **self.frame_config["text"]["title"],
+                        **self.frame_config.get("text", {}).get("title", {}),
                         "text": card_data.get('name', card_name)
                     },
                     "type": {
-                        **self.frame_config["text"]["type"],
+                        **self.frame_config.get("text", {}).get("type", {}),
                         "text": card_data.get('type_line', 'Instant')
                     },
                     "rules": {
-                        **self.frame_config["text"]["rules"],
+                        **self.frame_config.get("text", {}).get("rules", {}),
                         "text": card_data.get('oracle_text', '')
                     },
                     "pt": {
-                        **self.frame_config["text"]["pt"],
+                        **self.frame_config.get("text", {}).get("pt", {}),
                         "text": f"{card_data.get('power', '')}/{card_data.get('toughness', '')}" if 'power' in card_data and 'toughness' in card_data else ""
                     }
                 },
@@ -1142,7 +1142,7 @@ class CardBuilder:
                 "infoLanguage": DEFAULT_INFO_LANGUAGE,
                 "infoArtist": artist_name,
                 "infoNote": DEFAULT_INFO_NOTE,
-                "noCorners": True
+                "noCorners": self.frame_config.get("noCorners", True)
             }
         }
         
