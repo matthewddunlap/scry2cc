@@ -19,9 +19,9 @@ M15_FRAME = {
     "art_zoom": 3.027,
     "art_rotate": "0",
 
-    "set_symbol_x": 0.8537313432835821,
-    "set_symbol_y": 0.570362473347548,
-    "set_symbol_zoom": 0.226, # Still seems small, but taken from JSON
+    "set_symbol_x": 0.8144278606965174,
+    "set_symbol_y": 0.5707178393745558,
+    "set_symbol_zoom": 0.358, # This replaces your previous M15 default of 0.226 
 
     "watermark_source": "img/blank.png", # Default, path constructed later
     "watermark_x": 0.33880597014925373,
@@ -57,8 +57,8 @@ M15_FRAME = {
         "y": 0.591,
         "width": 0.12,
         "height": 0.041,
-        "vertical": "center",
-        "horizontal": "right"
+        "vertical": "center", # Assuming these are standard
+        "horizontal": "right" # Assuming these are standard
     },
     "watermark_bounds": {
         "x": 0.5,

@@ -32,8 +32,9 @@ def main():
     parser.add_argument('--output_file', '-o', help='Path to the output JSON file', default='mtg_cards_output.cardconjurer')
     parser.add_argument('--frame', '-f', help='Frame type to use', default='seventh', choices=['seventh', '8th', 'm15'])
     parser.add_argument('--frame_set', '-s', help='Frame set to use (only for seventh)', default='regular')
-    parser.add_argument('--legendary_crowns', action='store_true', help='Add legendary crowns for M15 frame (if applicable)') # New
-    parser.add_argument('--auto_fit_art', action='store_true', help='Automatically calculate art X, Y, and Zoom to fit frame') # NEW
+    parser.add_argument('--legendary_crowns', action='store_true', help='Add legendary crowns for M15 frame (if applicable)')
+    parser.add_argument('--auto_fit_art', action='store_true', help='Automatically calculate art X, Y, and Zoom to fit frame')
+    parser.add_argument('--auto_fit_set_symbol', action='store_true', help='Automatically calculate set symbol X, Y, and Zoom to fit bounds')
     # NEW ARGUMENT for set symbol override
     parser.add_argument('--set-symbol-override', type=str, default=None, metavar='CODE',
                         help='Override the set symbol using this code (e.g., "myset", "proxy"). Rarity is still used.')
@@ -55,7 +56,8 @@ def main():
         args.frame_set,
         args.legendary_crowns,
         args.auto_fit_art,
-        args.set_symbol_override # NEW
+        args.set_symbol_override,
+        args.auto_fit_set_symbol
     )
     result = processor.process_cards()
     processor.save_output(args.output_file, result)

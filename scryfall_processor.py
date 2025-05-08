@@ -17,17 +17,18 @@ logger = logging.getLogger(__name__)
 class ScryfallCardProcessor:
     """Main class for processing cards from Scryfall to CardConjurer format"""
     
-    def __init__(self, input_file: str, frame_type: str = "seventh", frame_set: str = "regular", legendary_crowns: bool = False, auto_fit_art: bool = False, set_symbol_override: Optional[str] = None):
+    def __init__(self, input_file: str, frame_type: str = "seventh", frame_set: str = "regular", legendary_crowns: bool = False, auto_fit_art: bool = False, set_symbol_override: Optional[str] = None, auto_fit_set_symbol: bool = False):
         self.input_file = input_file
         self.frame_type = frame_type
         self.frame_set = frame_set
-        self.legendary_crowns = legendary_crowns # Store
-        self.auto_fit_art = auto_fit_art # Store it
-        self.set_symbol_override = set_symbol_override # NEW: Store it
+        self.legendary_crowns = legendary_crowns
+        self.auto_fit_art = auto_fit_art
+        self.set_symbol_override = set_symbol_override
+        self.auto_fit_set_symbol = auto_fit_set_symbol
         self.frame_config = get_frame_config(frame_type)
         self.scryfall_api = ScryfallAPI()
         self.color_detector = ColorDetector()
-        self.card_builder = CardBuilder(frame_type, self.frame_config, frame_set, self.legendary_crowns, self.auto_fit_art, self.set_symbol_override)
+        self.card_builder = CardBuilder(frame_type, self.frame_config, frame_set, self.legendary_crowns, self.auto_fit_art, self.set_symbol_override, self.auto_fit_set_symbol)
     
     def load_cards(self) -> List[str]:
         """Load card names from input file."""

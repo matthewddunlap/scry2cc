@@ -3,11 +3,13 @@
 Module for building card data structure from Scryfall data
 """
 import logging
-from typing import Dict, List, Optional, Union
+from typing import Dict, List, Optional, Union, Tuple
 import io # For handling image bytes
+import re # For parsing numbers from strings
 
 import requests # For fetching image
 from PIL import Image # For getting image dimensions
+from lxml import etree # For SVG set symbols
 
 from config import (
     ccProto, ccHost, ccPort,
@@ -21,7 +23,7 @@ logger = logging.getLogger(__name__)
 class CardBuilder:
     """Class for building card data from Scryfall data"""
     
-    def __init__(self, frame_type: str, frame_config: Dict, frame_set: str = "regular", legendary_crowns: bool = False, auto_fit_art: bool = False, set_symbol_override: Optional[str] = None):
+    def __init__(self, frame_type: str, frame_config: Dict, frame_set: str = "regular", legendary_crowns: bool = False, auto_fit_art: bool = False, set_symbol_override: Optional[str] = None, auto_fit_set_symbol: bool = False):
         """Initialize the CardBuilder with the frame type and configuration.
         
         Args:
@@ -34,7 +36,167 @@ class CardBuilder:
         self.frame_set = frame_set
         self.legendary_crowns = legendary_crowns
         self.auto_fit_art = auto_fit_art
-        self.set_symbol_override = set_symbol_override # NEW: Store it
+        self.set_symbol_override = set_symbol_override
+        self.auto_fit_set_symbol = auto_fit_set_symbol
+
+# --- Add this method inside the CardBuilder class in card_builder.py ---
+
+    def _calculate_auto_fit_set_symbol_params(self, set_symbol_url: str) -> Optional[Dict[str, float]]:
+        """
+        Calculates setSymbolX, setSymbolY, and setSymbolZoom to make the set symbol
+        fit and center within its defined bounds on the card.
+        """
+        if not set_symbol_url:
+            logger.warning("No set symbol URL provided for auto-fit calculation.")
+            return None
+
+        try:
+            # Fetch SVG content
+            response = requests.get(set_symbol_url, timeout=10)
+            response.raise_for_status()
+            svg_bytes = response.content
+
+            # Get SVG intrinsic dimensions
+            svg_dims = self._get_svg_dimensions(svg_bytes)
+            if not svg_dims or svg_dims["width"] <= 0 or svg_dims["height"] <= 0:
+                logger.warning(f"Could not get valid dimensions for SVG: {set_symbol_url}")
+                return None
+
+            svg_intrinsic_width = svg_dims["width"]
+            svg_intrinsic_height = svg_dims["height"]
+
+            # Get card and set symbol box dimensions from frame config
+            card_total_width = self.frame_config.get("width")
+            card_total_height = self.frame_config.get("height")
+            symbol_bounds_config = self.frame_config.get("set_symbol_bounds")
+
+            if not all([card_total_width, card_total_height, symbol_bounds_config]):
+                logger.warning("Frame config missing width, height, or set_symbol_bounds for auto-fit.")
+                return None
+
+            # Relative bounds of the set symbol box (0-1)
+            s_bound_rel_x = symbol_bounds_config.get("x", 0.0)
+            s_bound_rel_y = symbol_bounds_config.get("y", 0.0)
+            s_bound_rel_width = symbol_bounds_config.get("width", 0.1) # Default to a small width if not set
+            s_bound_rel_height = symbol_bounds_config.get("height", 0.1) # Default to a small height
+
+            # Absolute pixel dimensions of the target set symbol box on the card
+            target_abs_symbol_box_width = s_bound_rel_width * card_total_width
+            target_abs_symbol_box_height = s_bound_rel_height * card_total_height
+
+            if target_abs_symbol_box_width <=0 or target_abs_symbol_box_height <=0:
+                logger.warning(f"Set symbol bounds have zero or negative dimensions in config. W: {target_abs_symbol_box_width}, H: {target_abs_symbol_box_height}")
+                return None
+
+            # Calculate scale to make SVG fit *inside* the box, preserving aspect ratio
+            scale_x_factor = target_abs_symbol_box_width / svg_intrinsic_width
+            scale_y_factor = target_abs_symbol_box_height / svg_intrinsic_height
+
+            calculated_zoom = min(scale_x_factor, scale_y_factor)
+
+            # If calculated zoom is extremely small or zero, something is wrong (e.g. massive SVG or tiny bounds)
+            if calculated_zoom <= 1e-6: # Threshold for too small zoom
+                logger.warning(f"Calculated set symbol zoom is near zero ({calculated_zoom:.2e}) for {set_symbol_url}. SVG: {svg_intrinsic_width}x{svg_intrinsic_height}, Bounds: {target_abs_symbol_box_width:.1f}x{target_abs_symbol_box_height:.1f}. Using default zoom from config.")
+                # Fallback to default zoom to avoid invisible symbol, but X/Y might still be off.
+                # A better fallback might be to not change X,Y,Zoom at all.
+                # For now, we return None to indicate failure and use full defaults.
+                return None
+
+
+            # Calculate new X and Y to center the scaled SVG within the symbol_bounds_config
+            # scaled_symbol_abs_width/height are the dimensions of the SVG *after* applying calculated_zoom
+            # but still in the SVG's original unit system if we think of zoom as unitless.
+            # More directly, these are the dimensions the symbol will take up on the card in pixels.
+            scaled_symbol_on_card_width_px = svg_intrinsic_width * calculated_zoom
+            scaled_symbol_on_card_height_px = svg_intrinsic_height * calculated_zoom
+
+            # Calculate offsets to center the symbol within its box, then convert to relative (0-1)
+            # new_x = box_origin_x + (box_width - symbol_width_after_zoom) / 2
+            calculated_set_symbol_x_relative = s_bound_rel_x + \
+                (target_abs_symbol_box_width - scaled_symbol_on_card_width_px) / 2 / card_total_width
+
+            calculated_set_symbol_y_relative = s_bound_rel_y + \
+                (target_abs_symbol_box_height - scaled_symbol_on_card_height_px) / 2 / card_total_height
+
+            logger.info(f"Auto-fit for set symbol {set_symbol_url}: Zoom={calculated_zoom:.4f}, X={calculated_set_symbol_x_relative:.4f}, Y={calculated_set_symbol_y_relative:.4f}")
+
+            return {
+                "setSymbolX": calculated_set_symbol_x_relative,
+                "setSymbolY": calculated_set_symbol_y_relative,
+                "setSymbolZoom": calculated_zoom
+            }
+
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Error fetching set symbol SVG from {set_symbol_url}: {e}")
+            return None
+        except Exception as e:
+            logger.error(f"Unexpected error during auto-fit set symbol calculation for {set_symbol_url}: {e}")
+            return None
+
+# --- Add this method inside the CardBuilder class in card_builder.py ---
+
+    def _get_svg_dimensions(self, svg_content_bytes: bytes) -> Optional[Dict[str, float]]:
+        """
+        Parses SVG content to get its intrinsic width and height.
+        Prioritizes viewBox, then width/height attributes if absolute.
+        """
+        if not svg_content_bytes:
+            return None
+        try:
+            # Prevent XML External Entity (XXE) attacks by using a non-network-accessing parser
+            parser = etree.XMLParser(resolve_entities=False, no_network=True)
+            svg_root = etree.fromstring(svg_content_bytes, parser=parser)
+            
+            # Ensure we are dealing with an SVG root element
+            if not svg_root.tag.endswith('svg'): # Handles namespace like {http://www.w3.org/2000/svg}svg
+                logger.warning("Parsed XML root is not an SVG element.")
+                return None
+
+            viewbox_str = svg_root.get("viewBox")
+            width_str = svg_root.get("width")
+            height_str = svg_root.get("height")
+
+            intrinsic_width = None
+            intrinsic_height = None
+
+            if viewbox_str:
+                try:
+                    # viewBox is "min-x min-y width height"
+                    parts = [float(p) for p in re.split(r'[,\s]+', viewbox_str.strip())]
+                    if len(parts) == 4:
+                        intrinsic_width = parts[2]
+                        intrinsic_height = parts[3]
+                        logger.debug(f"SVG viewBox parsed: w={intrinsic_width}, h={intrinsic_height}")
+                except ValueError:
+                    logger.warning(f"Could not parse SVG viewBox string: {viewbox_str}")
+            
+            # If viewBox didn't yield dimensions, try width/height attributes
+            # Only use them if they are absolute values (don't end in '%')
+            if intrinsic_width is None and width_str and not width_str.endswith('%'):
+                try:
+                    # Remove "px" or other units if present, then convert to float
+                    intrinsic_width = float(re.sub(r'[^\d\.]', '', width_str))
+                except ValueError:
+                    logger.warning(f"Could not parse SVG width attribute: {width_str}")
+            
+            if intrinsic_height is None and height_str and not height_str.endswith('%'):
+                try:
+                    intrinsic_height = float(re.sub(r'[^\d\.]', '', height_str))
+                except ValueError:
+                    logger.warning(f"Could not parse SVG height attribute: {height_str}")
+
+            if intrinsic_width is not None and intrinsic_height is not None and intrinsic_width > 0 and intrinsic_height > 0:
+                return {"width": intrinsic_width, "height": intrinsic_height}
+            else:
+                logger.warning(f"Could not determine valid intrinsic dimensions for SVG. W: {width_str}, H: {height_str}, VB: {viewbox_str}")
+                return None
+
+        except etree.XMLSyntaxError as e:
+            logger.error(f"Error parsing SVG XML: {e}")
+            return None
+        except Exception as e:
+            logger.error(f"Unexpected error getting SVG dimensions: {e}")
+            return None
 
 # --- Inside the CardBuilder class in card_builder.py ---
 
@@ -874,6 +1036,40 @@ class CardBuilder:
                 art_zoom = auto_fit_params["artZoom"]
             else:
                 logger.warning(f"Auto-fit art failed for {card_name}, using default art parameters from frame config.")
+
+        # Set Symbol Logic
+        set_code = card_data.get('set', 'lea').lower() # Ensure lowercase for consistency
+        rarity_code = card_data.get('rarity', 'c').lower()
+        if rarity_code in RARITY_MAP: # Assuming RARITY_MAP maps to rarity letters if needed
+            rarity_code = RARITY_MAP[rarity_code]
+        
+        set_symbol_source_url = f"{ccProto}://{ccHost}:{ccPort}/img/setSymbols/official/{set_code}-{rarity_code}.svg"
+
+        # Default set symbol parameters from frame config
+        default_ss_x = self.frame_config.get("set_symbol_x", 0.0)
+        default_ss_y = self.frame_config.get("set_symbol_y", 0.0)
+        default_ss_zoom = self.frame_config.get("set_symbol_zoom", 0.1)
+        logger.debug(f"Card: {card_name}, Frame: {self.frame_type}, Default Set Symbol Params: X={default_ss_x:.4f}, Y={default_ss_y:.4f}, Zoom={default_ss_zoom:.4f}")
+
+        set_symbol_x = default_ss_x
+        set_symbol_y = default_ss_y
+        set_symbol_zoom = default_ss_zoom
+
+        if self.auto_fit_set_symbol and set_symbol_source_url:
+            logger.info(f"Attempting auto-fit set symbol for {card_name} ({set_code}-{rarity_code}) using URL: {set_symbol_source_url}")
+            auto_fit_symbol_params = self._calculate_auto_fit_set_symbol_params(set_symbol_source_url)
+
+            if auto_fit_symbol_params:
+                logger.info(f"Card: {card_name}, Auto-fit successful. Applying calculated params: {auto_fit_symbol_params}")
+                set_symbol_x = auto_fit_symbol_params["setSymbolX"]
+                set_symbol_y = auto_fit_symbol_params["setSymbolY"]
+                set_symbol_zoom = auto_fit_symbol_params["setSymbolZoom"]
+            else:
+                logger.warning(f"Card: {card_name}, Auto-fit set symbol FAILED or returned None. Using default parameters.")
+        else:
+            logger.debug(f"Card: {card_name}, Auto-fit set symbol NOT ATTEMPTED (flag off or no URL). Using default parameters.")
+
+        logger.info(f"Card: {card_name}, FINAL Set Symbol Params for JSON: X={set_symbol_x:.4f}, Y={set_symbol_y:.4f}, Zoom={set_symbol_zoom:.4f}")
         
         # Build the card data object
         card_obj = {

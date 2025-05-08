@@ -11,9 +11,9 @@ EIGHTH_FRAME = {
     "art_y": 0.10199004975124377,
     "art_zoom": 2.941,
     "art_rotate": "0",
-    "set_symbol_x": 0.8497512437810946,
+    "set_symbol_x": 0.8019900497512438,
     "set_symbol_y": 0.5689410092395167,
-    "set_symbol_zoom": 110,
+    "set_symbol_zoom": 0.343,
     "watermark_source": "img/blank.png",  # Path will be prefixed with protocol/host/port
     "watermark_x": 0,
     "watermark_y": 0,
@@ -36,8 +36,8 @@ EIGHTH_FRAME = {
         "y": 0.5886,
         "width": 0.12,
         "height": 0.0391,
-        "vertical": "center",
-        "horizontal": "right"
+        "vertical": "center", # Assuming these are standard
+        "horizontal": "right" # Assuming these are standard
     },
     "watermark_bounds": {
         "x": 0.5,

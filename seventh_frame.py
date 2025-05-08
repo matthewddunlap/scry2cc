@@ -11,9 +11,9 @@ SEVENTH_FRAME = {
     "art_y": 0.09914712153518123,
     "art_zoom": 2.763,
     "art_rotate": "0",
-    "set_symbol_x": 0.8383084577114428,
-    "set_symbol_y": 0.5550817341862118,
-    "set_symbol_zoom": 0.20600000000000002,
+    "set_symbol_x": 0.8024875621890547,
+    "set_symbol_y": 0.5554371002132196,
+    "set_symbol_zoom": 0.327,
     "watermark_source": "img/blank.png",  # Path will be prefixed with protocol/host/port
     "watermark_x": 0.012437810945273632,
     "watermark_y": 0.5202558635394456,
@@ -35,8 +35,8 @@ SEVENTH_FRAME = {
         "y": 0.5739,
         "width": 0.12,
         "height": 0.0372,
-        "vertical": "center",
-        "horizontal": "right"
+        "vertical": "center", # Assuming these are standard, taken from your JSON
+        "horizontal": "right" # Assuming these are standard
     },
     "watermark_bounds": {
         "x": 0.18,
