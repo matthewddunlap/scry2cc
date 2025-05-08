@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 class CardBuilder:
     """Class for building card data from Scryfall data"""
     
-    def __init__(self, frame_type: str, frame_config: Dict, frame_set: str = "regular", legendary_crowns: bool = False, auto_fit_art: bool = False):
+    def __init__(self, frame_type: str, frame_config: Dict, frame_set: str = "regular", legendary_crowns: bool = False, auto_fit_art: bool = False, set_symbol_override: Optional[str] = None):
         """Initialize the CardBuilder with the frame type and configuration.
         
         Args:
@@ -34,6 +34,7 @@ class CardBuilder:
         self.frame_set = frame_set
         self.legendary_crowns = legendary_crowns
         self.auto_fit_art = auto_fit_art
+        self.set_symbol_override = set_symbol_override # NEW: Store it
 
 # --- Inside the CardBuilder class in card_builder.py ---
 
@@ -827,11 +828,22 @@ class CardBuilder:
             color_code = color_info['code']
             color_name = color_info['name']
         
-        # Get set and rarity information
-        set_code = card_data.get('set', 'lea')  # Default to Alpha
-        rarity_code = card_data.get('rarity', 'c')  # Default to common
-        if isinstance(rarity_code, str) and rarity_code in RARITY_MAP:
-            rarity_code = RARITY_MAP[rarity_code]
+        # Get set and rarity information FROM SCRYFALL for infoSet
+        set_code_from_scryfall = card_data.get('set', DEFAULT_INFO_SET)
+
+        rarity_from_scryfall = card_data.get('rarity', 'c') # This is the Scryfall rarity (c, u, r, m, s)
+        # Map Scryfall rarity to CardConjurer rarity code (e.g., 'c' -> 'C', 'mythic' -> 'M')
+        # This rarity_code_for_symbol will be used for the set symbol image.
+        rarity_code_for_symbol = RARITY_MAP.get(rarity_from_scryfall, rarity_from_scryfall) # Fallback to original if not in map
+
+        # Determine which set code to use for the setSymbolSource URL
+        if self.set_symbol_override:
+            # User provided an override, use that (make it lowercase for URL)
+            set_code_for_symbol_url = self.set_symbol_override.lower()
+            logger.info(f"Using overridden set symbol code for '{card_name}': {set_code_for_symbol_url}")
+        else:
+            # No override, use the set code from Scryfall (lowercase for URL)
+            set_code_for_symbol_url = set_code_from_scryfall.lower()
         
         # Get artist name
         artist_name = card_data.get('artist', DEFAULT_INFO_ARTIST)
@@ -877,7 +889,7 @@ class CardBuilder:
                 "artY": art_y,
                 "artZoom": art_zoom,
                 "artRotate": self.frame_config["art_rotate"],
-                "setSymbolSource": f"{ccProto}://{ccHost}:{ccPort}/img/setSymbols/official/{set_code}-{rarity_code}.svg",
+                "setSymbolSource": f"{ccProto}://{ccHost}:{ccPort}/img/setSymbols/official/{set_code_for_symbol_url}-{rarity_code_for_symbol}.svg",
                 "setSymbolX": self.frame_config["set_symbol_x"],
                 "setSymbolY": self.frame_config["set_symbol_y"],
                 "setSymbolZoom": self.frame_config["set_symbol_zoom"],
@@ -927,8 +939,10 @@ class CardBuilder:
                     }
                 },
                 "infoNumber": DEFAULT_INFO_NUMBER,
-                "infoRarity": DEFAULT_INFO_RARITY,
-                "infoSet": DEFAULT_INFO_SET,
+                # infoRarity uses the mapped rarity code, uppercased
+                "infoRarity": rarity_code_for_symbol.upper() if rarity_code_for_symbol else DEFAULT_INFO_RARITY,
+                # infoSet ALWAYS uses the actual Scryfall set code, uppercased
+                "infoSet": set_code_from_scryfall.upper(),
                 "infoLanguage": DEFAULT_INFO_LANGUAGE,
                 "infoArtist": artist_name,
                 "infoNote": DEFAULT_INFO_NOTE,
