@@ -20,6 +20,6 @@ DEFAULT_INFO_NUMBER = "2025"
 def init_logging():
     """Initialize logging configuration"""
     logging.basicConfig(
-        level=logging.INFO,
+        level=logging.DEBUG,
         format='%(asctime)s - %(levelname)s - %(message)s'
     )

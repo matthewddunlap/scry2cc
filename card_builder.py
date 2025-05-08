@@ -40,25 +40,135 @@ class CardBuilder:
         self.auto_fit_set_symbol = auto_fit_set_symbol
 
 # --- Add this method inside the CardBuilder class in card_builder.py ---
+# --- Replace the existing _calculate_auto_fit_set_symbol_params method AGAIN ---
+    def _calculate_auto_fit_set_symbol_params(self, set_symbol_url: str) -> Optional[Dict[str, float]]:
+        """
+        Calculates setSymbolX, setSymbolY, and setSymbolZoom to make the set symbol
+        fit within its defined bounds, positioned according to bounds alignment hints.
+        """
+        if not set_symbol_url: # ... (initial checks remain same)
+            return None
 
-# --- INSIDE CardBuilder ---
-# Temporarily simplify this method for testing
-def _calculate_auto_fit_set_symbol_params(self, set_symbol_url: str) -> Optional[Dict[str, float]]:
-    logger.warning(f"TEMP DEBUG: _calculate_auto_fit_set_symbol_params called for {set_symbol_url}. Returning HARDCODED values for atq-r on m15.")
+        try:
+            # 1. Fetch and get SVG dims (remains same)
+            response = requests.get(set_symbol_url, timeout=10)
+            response.raise_for_status()
+            svg_bytes = response.content
+            svg_dims = self._get_svg_dimensions(svg_bytes)
+            if not svg_dims or svg_dims["width"] <= 0 or svg_dims["height"] <= 0:
+                return None
+            svg_intrinsic_width = svg_dims["width"]
+            svg_intrinsic_height = svg_dims["height"]
 
-    # Hardcode the "FIXED" values for atq-r.svg on M15 frame for testing
-    # In a real scenario, this would need a lookup or proper calculation
-    if "atq-r.svg" in set_symbol_url and self.frame_type == 'm15':
-         # Use the values from the "FIXED" JSON
-        return {
-            "setSymbolX": 0.8164179104477612,
-            "setSymbolY": 0.570362473347548,
-            "setSymbolZoom": 0.352
-        }
-    else:
-        # For any other symbol, return None to use defaults
-        logger.warning(f"TEMP DEBUG: No hardcoded value for {set_symbol_url} on {self.frame_type}. Returning None.")
-        return None
+            # 2. Get config values (remains same)
+            card_total_width = self.frame_config.get("width")
+            card_total_height = self.frame_config.get("height")
+            symbol_bounds_config = self.frame_config.get("set_symbol_bounds")
+
+            # 3. Validate config values (remains same)
+            if not (card_total_width and card_total_height and symbol_bounds_config and
+                    isinstance(symbol_bounds_config, dict) and
+                    all(k in symbol_bounds_config for k in ('x', 'y', 'width', 'height'))): # Check core keys
+                return None
+            if card_total_width <= 0 or card_total_height <= 0:
+                 return None
+            s_bound_rel_x = symbol_bounds_config.get("x", 0.0)
+            s_bound_rel_y = symbol_bounds_config.get("y", 0.0)
+            s_bound_rel_width = symbol_bounds_config.get("width", 0.0)
+            s_bound_rel_height = symbol_bounds_config.get("height", 0.0)
+            if s_bound_rel_width <= 0 or s_bound_rel_height <= 0:
+                 return None
+
+            # --- Now we are sure all inputs are valid ---
+
+            # 4. Calculate Zoom (remains same)
+            target_abs_symbol_box_width = s_bound_rel_width * card_total_width
+            target_abs_symbol_box_height = s_bound_rel_height * card_total_height
+            scale_x_factor = target_abs_symbol_box_width / svg_intrinsic_width
+            scale_y_factor = target_abs_symbol_box_height / svg_intrinsic_height
+            calculated_zoom = min(scale_x_factor, scale_y_factor)
+            if calculated_zoom <= 1e-6:
+                return None
+
+            # 5. Calculate scaled symbol dimensions on card (remains same)
+            scaled_symbol_on_card_width_px = svg_intrinsic_width * calculated_zoom
+            scaled_symbol_on_card_height_px = svg_intrinsic_height * calculated_zoom
+
+            # --- ADD THIS DETAILED LOGGING BLOCK ---
+            logger.debug(f"Symbol URL: {set_symbol_url}")
+            logger.debug(f"SVG Intrinsic Dims: {svg_dims}") # <<< Logs the dimensions
+            logger.debug(f"Card Dims: W={card_total_width}, H={card_total_height}")
+            logger.debug(f"Symbol Bounds Config (Rel): X={s_bound_rel_x:.4f}, Y={s_bound_rel_y:.4f}, W={s_bound_rel_width:.4f}, H={s_bound_rel_height:.4f}")
+            logger.debug(f"Target Abs Symbol Box Dims: W={target_abs_symbol_box_width:.2f}, H={target_abs_symbol_box_height:.2f}")
+            logger.debug(f"Scale Factors: scale_x={scale_x_factor:.4f}, scale_y={scale_y_factor:.4f}")
+            logger.debug(f"Calculated Zoom (min): {calculated_zoom:.4f}")
+            logger.debug(f"Scaled Symbol On Card Dims (px): W={scaled_symbol_on_card_width_px:.2f}, H={scaled_symbol_on_card_height_px:.2f}")
+            # --- END LOGGING BLOCK ----
+
+            # 6. --- NEW POSITIONING LOGIC based on Alignment Hints ---
+            # 6. --- Positioning Logic Attempt 5: DynZoom, FixedY, DynX_TypeAlign ---
+
+            # Calculate X Position (Align Right Edge near Type Box Right Edge)
+            type_box_config = self.frame_config.get("text", {}).get("type", {})
+            if not type_box_config or not all(k in type_box_config for k in ('x', 'width')):
+                 logger.warning(f"Frame config missing type box x/width for dynamic X calc. Using default X.")
+                 calculated_set_symbol_x_relative = self.frame_config.get("set_symbol_x", 0.8164) # Fallback X (use the fixed one as default)
+            else:
+                 type_box_right_edge_rel = type_box_config['x'] + type_box_config['width']
+                 # Padding derived empirically (-0.007), represents slight overlap or adjusted reference point
+                 effective_right_align_point = type_box_right_edge_rel + 0.007
+                 scaled_symbol_width_rel = scaled_symbol_on_card_width_px / card_total_width
+                 calculated_set_symbol_x_relative = effective_right_align_point - scaled_symbol_width_rel
+
+            # Set Y Position (Use Fixed Value derived from CC fixed JSON)
+            calculated_set_symbol_y_relative = 0.5704 # Hardcoded target Y for M15
+
+            # --- End Attempt 5 ---
+            # --- END OF NEW POSITIONING LOGIC ---
+
+# --- Modify the end of _calculate_auto_fit_set_symbol_params ---
+
+            # ... positioning logic ...
+
+            # 8. Final log before returning
+            log_zoom = calculated_zoom
+            log_x = calculated_set_symbol_x_relative
+            log_y = calculated_set_symbol_y_relative
+            # --- MODIFY THIS LINE ---
+            logger.info(f"Auto-fit for set symbol {set_symbol_url} [Align Type Right Attempt]: Zoom={log_zoom:.4f}, X={log_x:.4f}, Y={log_y:.4f}")
+            # --- END MODIFY ---
+
+            return_value = {
+                "setSymbolX": log_x,
+                "setSymbolY": log_y,
+                "setSymbolZoom": log_zoom
+            }
+            # --- ADD THIS LOG ---
+            logger.debug(f"CALCULATION FUNCTION RETURNING: {return_value}")
+            # --- END ADD ---
+            return return_value
+
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Error fetching set symbol SVG from {set_symbol_url}: {e}")
+            logger.debug("CALCULATION FUNCTION RETURNING: None (RequestException)") # Add log
+            return None
+        except Exception as e:
+            logger.error(f"Unexpected error during auto-fit set symbol calculation for {set_symbol_url}: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            logger.debug("CALCULATION FUNCTION RETURNING: None (Exception)") # Add log
+            return None
+
+            return {
+                "setSymbolX": calculated_set_symbol_x_relative,
+                "setSymbolY": calculated_set_symbol_y_relative,
+                "setSymbolZoom": calculated_zoom
+            }
+
+        except requests.exceptions.RequestException as e: # ... (error handling remains same)
+            return None
+        except Exception as e: # ... (error handling remains same)
+            return None
 
 # --- Add this method inside the CardBuilder class in card_builder.py ---
 
