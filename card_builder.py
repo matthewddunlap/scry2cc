@@ -147,19 +147,6 @@ class CardBuilder:
             scale_y_factor = target_abs_symbol_box_height / svg_intrinsic_height
             calculated_zoom = min(scale_x_factor, scale_y_factor)
 
-            # --- XLN ZOOM OVERRIDE (Apply to fallback calculation if needed) ---
-            if '/xln-' in set_symbol_url.lower():
-                original_zoom = calculated_zoom
-                target_xln_zoom = None
-                # Ensure self.frame_type is compared case-insensitively or consistently
-                current_frame_type_lower = self.frame_type.lower() 
-                if current_frame_type_lower == 'seventh': target_xln_zoom = 0.263
-                elif current_frame_type_lower == 'm15': target_xln_zoom = 0.287
-                # Add elif for '8th' if needed
-                if target_xln_zoom is not None:
-                    calculated_zoom = target_xln_zoom
-                    logger.info(f"Fallback: Applying XLN zoom override for {self.frame_type}: {calculated_zoom:.4f} (Original: {original_zoom:.4f})")
-            # --- END XLN OVERRIDE ---
             if calculated_zoom <= 1e-6: return None
 
             # 2f. Calculate Scaled Dimensions
