@@ -13,6 +13,8 @@ EIGHTH_FRAME = {
     "art_rotate": "0",
     "set_symbol_x": 0.8019900497512438,
     "set_symbol_y": 0.5689410092395167,
+    "set_symbol_align_x_right": 0.9213333333333333,  # From M15's 1382 / 1500.0
+    "set_symbol_align_y_center": 0.590952380952381,  # From M15's 1241 / 2100.0
     "set_symbol_zoom": 0.343,
     "watermark_source": "img/blank.png",  # Path will be prefixed with protocol/host/port
     "watermark_x": 0,

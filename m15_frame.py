@@ -21,6 +21,8 @@ M15_FRAME = {
 
     "set_symbol_x": 0.8144278606965174,
     "set_symbol_y": 0.5707178393745558,
+    "set_symbol_align_x_right": 0.9213333333333333,  # 1382 / 1500.0
+    "set_symbol_align_y_center": 0.590952380952381,  # 1241 / 2100.0
     "set_symbol_zoom": 0.358, # This replaces your previous M15 default of 0.226 
 
     "watermark_source": "img/blank.png", # Default, path constructed later
@@ -56,7 +58,7 @@ M15_FRAME = {
         "x": 0.9213,
         "y": 0.591,
         "width": 0.12,
-        "height": 0.041,
+        "height": 0.04095238095238095,  # From 86/2100 in m15/version.js (use more precision)
         "vertical": "center", # Assuming these are standard
         "horizontal": "right" # Assuming these are standard
     },

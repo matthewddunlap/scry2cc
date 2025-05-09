@@ -13,6 +13,8 @@ SEVENTH_FRAME = {
     "art_rotate": "0",
     "set_symbol_x": 0.8024875621890547,
     "set_symbol_y": 0.5554371002132196,
+    "set_symbol_align_x_right": 0.891333, # 1337 / 1500.0
+    "set_symbol_align_y_center": 0.575714, # 1209 / 2100.0
     "set_symbol_zoom": 0.327,
     "watermark_source": "img/blank.png",  # Path will be prefixed with protocol/host/port
     "watermark_x": 0.012437810945273632,
@@ -34,7 +36,7 @@ SEVENTH_FRAME = {
         "x": 0.9,
         "y": 0.5739,
         "width": 0.12,
-        "height": 0.0372,
+        "height": 0.0372, # <--- UPDATED from packSeventh.js
         "vertical": "center", # Assuming these are standard, taken from your JSON
         "horizontal": "right" # Assuming these are standard
     },
@@ -47,18 +49,19 @@ SEVENTH_FRAME = {
     "text": {
         "mana": {
             "name": "Mana Cost",
+            "text": "",
             "x": 0.1067,
             "y": 0.0539,
             "width": 0.8174,
-            "height": 0.03428571428571429,
+            "height": 0.034285714285714286,
             "oneLine": True,
             "size": 0.04395604395604396,
             "align": "right",
-            "manaCost": True,
-            "fontSize": 0
+            "manaCost": True
         },
         "title": {
             "name": "Title",
+            "text": "",
             "x": 0.1134,
             "y": 0.0481,
             "width": 0.7734,
@@ -68,44 +71,46 @@ SEVENTH_FRAME = {
             "size": 0.041,
             "color": "white",
             "shadowX": 0.002,
-            "shadowY": 0.0015,
-            "fontSize": 0
+            "shadowY": 0.0015
         },
         "type": {
             "name": "Type",
+            "text": "",
             "x": 0.1074,
             "y": 0.5486,
             "width": 0.7852,
             "height": 0.0543,
             "oneLine": True,
+            "font": "mplantin",
             "size": 0.032,
             "color": "white",
             "shadowX": 0.002,
-            "shadowY": 0.0015,
-            "fontSize": 0
+            "shadowY": 0.0015
         },
         "rules": {
             "name": "Rules Text",
+            "text": "",
             "x": 0.128,
             "y": 0.6067,
             "width": 0.744,
             "height": 0.2724,
-            "size": 0.0358,
-            "fontSize": 0
+            "font": "mplantin",
+            "size": 0.0358
         },
         "pt": {
             "name": "Power/Toughness",
+            "text": "",
             "x": 0.8074,
             "y": 0.9043,
             "width": 0.1367,
             "height": 0.0429,
-            "size": 0.0429,
             "oneLine": True,
+            "font": "mplantin",
+            "size": 0.0429,
             "align": "center",
             "color": "white",
             "shadowX": 0.002,
-            "shadowY": 0.0015,
-            "fontSize": 0
+            "shadowY": 0.0015
         }
     },
     "bottom_info": {
