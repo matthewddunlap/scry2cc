@@ -17,6 +17,9 @@ DEFAULT_INFO_ARTIST = "Unknown Artist"
 DEFAULT_INFO_NOTE = ""
 DEFAULT_INFO_NUMBER = "2025"
 
+# API Throttling
+DEFAULT_API_DELAY_MS = 100  # Default delay in milliseconds (100ms = 10 requests/sec max)
+
 def init_logging():
     """Initialize logging configuration"""
     logging.basicConfig(

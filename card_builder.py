@@ -7,6 +7,7 @@ from typing import Dict, List, Optional, Union, Tuple
 import io # For handling image bytes
 import re # For parsing numbers from strings
 import json
+import time
 
 import requests # For fetching image
 from PIL import Image # For getting image dimensions
@@ -24,7 +25,7 @@ logger = logging.getLogger(__name__)
 class CardBuilder:
     """Class for building card data from Scryfall data"""
     
-    def __init__(self, frame_type: str, frame_config: Dict, frame_set: str = "regular", legendary_crowns: bool = False, auto_fit_art: bool = False, set_symbol_override: Optional[str] = None, auto_fit_set_symbol: bool = False):
+    def __init__(self, frame_type: str, frame_config: Dict, frame_set: str = "regular", legendary_crowns: bool = False, auto_fit_art: bool = False, set_symbol_override: Optional[str] = None, auto_fit_set_symbol: bool = False, api_delay_seconds: float = 0.1):
         """Initialize the CardBuilder with the frame type and configuration.
         
         Args:
@@ -39,6 +40,7 @@ class CardBuilder:
         self.auto_fit_art = auto_fit_art
         self.set_symbol_override = set_symbol_override
         self.auto_fit_set_symbol = auto_fit_set_symbol
+        self.api_delay_seconds = api_delay_seconds
         self.symbol_placement_lookup = {}
         if self.auto_fit_set_symbol: # Only load if the feature is active
             try:
@@ -254,19 +256,33 @@ class CardBuilder:
 
 # --- Inside the CardBuilder class in card_builder.py ---
 
+# --- In card_builder.py ---
+# Ensure 'time' is imported at the top of the file:
+# import time
+
     def _calculate_auto_fit_art_params(self, art_url: str) -> Optional[Dict[str, float]]:
         """
         Calculates artX, artY, and artZoom to make art cover the art box.
         Returns a dict with {'artX', 'artY', 'artZoom'} or None if an error occurs.
+        Respects self.api_delay_seconds after fetching the art image.
         """
         if not art_url:
             logger.warning("No art URL provided for auto-fit calculation.")
             return None
 
         try:
-            # Fetch image data
+            # --- Fetch image data ---
+            logger.debug(f"Fetching art for auto-fit: {art_url}")
             response = requests.get(art_url, timeout=10)
             response.raise_for_status() # Raise an exception for bad status codes
+            
+            # --- APPLY DELAY AFTER THE NETWORK REQUEST ---
+            # This delay is applied after successfully fetching the art image.
+            # It's polite to the server providing the art (e.g., Scryfall's cdn).
+            if self.api_delay_seconds > 0:
+                logger.debug(f"Art fetch complete for {art_url}. Waiting {self.api_delay_seconds * 1000:.0f}ms...")
+                time.sleep(self.api_delay_seconds) 
+            # ---------------------------------------------
             
             # Get image dimensions using Pillow
             img = Image.open(io.BytesIO(response.content))
@@ -278,57 +294,72 @@ class CardBuilder:
                 return None
 
             # Get card and art box dimensions from frame config
-            # These are the absolute pixel dimensions of the card output
             card_total_width = self.frame_config.get("width")
             card_total_height = self.frame_config.get("height")
-            
-            # These are relative (0-1) bounds of the art box within the card
             art_bounds_config = self.frame_config.get("art_bounds")
 
-            if not all([card_total_width, card_total_height, art_bounds_config]):
-                logger.warning("Frame configuration missing width, height, or art_bounds for auto-fit.")
+            # Validate config values
+            if not (card_total_width and card_total_height and art_bounds_config and
+                    isinstance(art_bounds_config, dict) and
+                    all(k in art_bounds_config for k in ('x', 'y', 'width', 'height'))):
+                logger.warning(f"Frame configuration missing width, height, or valid art_bounds for auto-fit art.")
                 return None
+            if card_total_width <= 0 or card_total_height <= 0:
+                 logger.warning(f"Card dimensions in config are invalid for art auto-fit: W={card_total_width}, H={card_total_height}")
+                 return None
 
-            art_box_relative_x = art_bounds_config.get("x", 0)
-            art_box_relative_y = art_bounds_config.get("y", 0)
-            art_box_relative_width = art_bounds_config.get("width", 1)
-            art_box_relative_height = art_bounds_config.get("height", 1)
+            art_box_relative_x = art_bounds_config.get("x", 0.0) # Use .get for safety
+            art_box_relative_y = art_bounds_config.get("y", 0.0)
+            art_box_relative_width = art_bounds_config.get("width", 0.0)
+            art_box_relative_height = art_bounds_config.get("height", 0.0)
+
+            if art_box_relative_width <= 0 or art_box_relative_height <= 0:
+                logger.warning(f"Art bounds width/height are zero or negative in config: W={art_box_relative_width}, H={art_box_relative_height}")
+                return None
 
             # Absolute dimensions of the target art box on the card
             target_abs_art_box_width = art_box_relative_width * card_total_width
             target_abs_art_box_height = art_box_relative_height * card_total_height
             
             # Calculate scale to make art cover the box
+            if art_natural_width <= 0 or art_natural_height <= 0: # Should have been caught earlier but good check
+                logger.warning(f"Art image from {art_url} has zero dimensions before scaling.")
+                return None
             scale_x = target_abs_art_box_width / art_natural_width
             scale_y = target_abs_art_box_height / art_natural_height
             
             calculated_zoom = max(scale_x, scale_y)
 
             # Calculate new artX and artY (relative to card dimensions 0-1)
-            # These formulas match CardConjurer's autoFitArt()
-            # (target_abs_art_box_width - art_natural_width * calculated_zoom) is the horizontal "empty space" (could be negative if cropping)
-            # We divide by 2 to center it, then divide by card_total_width to make it relative again.
             calculated_art_x = art_box_relative_x + \
                                (target_abs_art_box_width - art_natural_width * calculated_zoom) / 2 / card_total_width
             
             calculated_art_y = art_box_relative_y + \
                                (target_abs_art_box_height - art_natural_height * calculated_zoom) / 2 / card_total_height
             
-            logger.info(f"Auto-fit for {art_url}: Zoom={calculated_zoom:.4f}, X={calculated_art_x:.4f}, Y={calculated_art_y:.4f}")
-            return {
+            logger.info(f"Auto-fit for art {art_url}: Zoom={calculated_zoom:.4f}, X={calculated_art_x:.4f}, Y={calculated_art_y:.4f}")
+            
+            return_value = {
                 "artX": calculated_art_x,
                 "artY": calculated_art_y,
                 "artZoom": calculated_zoom
             }
+            logger.debug(f"ART CALCULATION FUNCTION RETURNING: {return_value}")
+            return return_value
 
         except requests.exceptions.RequestException as e:
             logger.error(f"Error fetching art image from {art_url}: {e}")
+            logger.debug("ART CALCULATION FUNCTION RETURNING: None (RequestException)")
             return None
         except IOError as e: # Pillow error
             logger.error(f"Error processing art image from {art_url} with Pillow: {e}")
+            logger.debug("ART CALCULATION FUNCTION RETURNING: None (IOError)")
             return None
         except Exception as e:
             logger.error(f"Unexpected error during auto-fit art calculation for {art_url}: {e}")
+            import traceback # Import here for safety if not globally imported in this module
+            logger.error(traceback.format_exc())
+            logger.debug("ART CALCULATION FUNCTION RETURNING: None (Exception)")
             return None
     
     def build_frame_path(self, color_code: str) -> str:
