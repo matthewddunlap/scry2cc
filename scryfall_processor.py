@@ -63,6 +63,13 @@ class ScryfallCardProcessor:
                 # Assuming get_earliest_printing makes an API call to Scryfall
                 card_data = self.scryfall_api.get_earliest_printing(card_name)
                 
+                # --- DEBUGGING PRINT ---
+                if card_data:
+                    logger.debug(f"Raw card_data for '{card_name}' from API: {json.dumps(card_data, indent=2)}")
+                else:
+                    logger.warning(f"No card_data returned from API for '{card_name}' in processor.")
+                # --- END DEBUGGING ---
+                
                 # --- APPLY DELAY AFTER THIS API CALL (to Scryfall) ---
                 # This delay respects Scryfall's rate limits for the call above.
                 # CardBuilder will handle its own delays for its image/SVG fetches.

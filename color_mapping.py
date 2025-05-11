@@ -10,10 +10,11 @@ COLOR_CODE_MAP = {
     'R': {'code': 'r', 'name': 'Red'},
     'G': {'code': 'g', 'name': 'Green'},
     # For lands and colorless cards
-    'C': {'code': 'a', 'name': 'Artifact'},     # For colorless artifacts
+    'C': {'code': 'c', 'name': 'Colorless'},    # For true colorless cards (non-artifact)
     'L': {'code': 'l', 'name': 'Land'},         # For lands
-    'A': {'code': 'a', 'name': 'Artifact'},     # For M15 Artifact frames
-    'M': {'code': 'm', 'name': 'Multicolored'}  # For M15 Gold/Multicolor frames
+    'A': {'code': 'a', 'name': 'Artifact'},     # For Artifacts (used by M15 regular, can be base for colored artifacts)
+    'M': {'code': 'm', 'name': 'Multicolored'}, # For M15 Gold/Multicolor frames
+    'V': {'code': 'v', 'name': 'Vehicle'}       # For Vehicle P/T boxes on m15ub
 }
 
 # Rarity mapping

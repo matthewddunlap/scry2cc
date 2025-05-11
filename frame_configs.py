@@ -5,6 +5,7 @@ Imports and provides access to different frame configurations
 from seventh_frame import SEVENTH_FRAME
 from eighth_frame import EIGHTH_FRAME
 from m15_frame import M15_FRAME
+from m15ub_frame import M15UB_FRAME # New import
 
 def get_frame_config(frame_type: str):
     """Get the configuration for the specified frame type."""
@@ -12,5 +13,7 @@ def get_frame_config(frame_type: str):
         return EIGHTH_FRAME
     elif frame_type == "m15":
         return M15_FRAME
+    elif frame_type == "m15ub": # New case
+        return M15UB_FRAME
     else:
         return SEVENTH_FRAME  # Default to seventh

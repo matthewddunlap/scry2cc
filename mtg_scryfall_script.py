@@ -30,9 +30,9 @@ def main():
     parser = argparse.ArgumentParser(description='Process MTG cards and create CardConjurer JSON')
     parser.add_argument('input_file', help='Path to the input file containing card names')
     parser.add_argument('--output_file', '-o', help='Path to the output JSON file', default='mtg_cards_output.cardconjurer')
-    parser.add_argument('--frame', '-f', help='Frame type to use', default='seventh', choices=['seventh', '8th', 'm15'])
+    parser.add_argument('--frame', '-f', help='Frame type to use', default='seventh', choices=['seventh', '8th', 'm15', 'm15ub']) # Added m15ub
     parser.add_argument('--frame_set', '-s', help='Frame set to use (only for seventh)', default='regular')
-    parser.add_argument('--legendary_crowns', action='store_true', help='Add legendary crowns for M15 frame (if applicable)')
+    parser.add_argument('--legendary_crowns', action='store_true', help='Add legendary crowns for M15/M15UB frames (if applicable)')
     parser.add_argument('--auto_fit_art', action='store_true', help='Automatically calculate art X, Y, and Zoom to fit frame')
     parser.add_argument('--auto_fit_set_symbol', action='store_true', help='Automatically calculate set symbol X, Y, and Zoom to fit bounds')
     parser.add_argument('--set-symbol-override', type=str, default=None, metavar='CODE',
@@ -41,21 +41,16 @@ def main():
     
     args = parser.parse_args()
     
-    # Validate frame type
-    if args.frame not in ['seventh', '8th', 'm15']:
-        logger.error(f"Invalid frame type: {args.frame}. Must be 'seventh', '8th', or 'm15'")
-        sys.exit(1)
-    # The 'choices' parameter in argparse handles this validation automatically.
-    # If an invalid choice is given, argparse will exit with an error message.
-    # So, the explicit if check can be removed if 'choices' is used.
+    # Validate frame type - argparse 'choices' already handles this.
+    # if args.frame not in ['seventh', '8th', 'm15', 'm15ub']:
+    #     logger.error(f"Invalid frame type: {args.frame}. Must be 'seventh', '8th', 'm15', or 'm15ub'")
+    #     sys.exit(1)
 
-    # Calculate api_delay_seconds from args.api_delay_ms
-    calculated_api_delay_seconds = args.api_delay_ms / 1000.0 # Renamed for clarity
+    calculated_api_delay_seconds = args.api_delay_ms / 1000.0
     if calculated_api_delay_seconds < 0:
         logger.warning("API delay cannot be negative, using 0.")
         calculated_api_delay_seconds = 0
 
-    # Pass the new argument to ScryfallCardProcessor
     processor = ScryfallCardProcessor(
         input_file=args.input_file,
         frame_type=args.frame, 
@@ -64,7 +59,7 @@ def main():
         auto_fit_art=args.auto_fit_art,
         set_symbol_override=args.set_symbol_override,
         auto_fit_set_symbol=args.auto_fit_set_symbol,
-        api_delay_seconds=calculated_api_delay_seconds # Pass the calculated value
+        api_delay_seconds=calculated_api_delay_seconds
     )
     result = processor.process_cards()
     processor.save_output(args.output_file, result)
