@@ -33,39 +33,45 @@ class ScryfallCardProcessor:
         self.card_builder = CardBuilder(frame_type, self.frame_config, frame_set, self.legendary_crowns, self.auto_fit_art, self.set_symbol_override, self.auto_fit_set_symbol, self.api_delay_seconds)
     
     def load_cards(self) -> List[str]:
-        """Load card names from input file, stripping leading counts."""
+        """
+        Load card names from input file.
+        Only processes lines starting with a digit, then strips the leading digits and spaces.
+        """
         card_names = []
         try:
             with open(self.input_file, 'r') as file:
                 for line in file:
-                    # Strip leading/trailing whitespace first
                     processed_line = line.strip()
-                    # Use regex to remove leading digits and spaces (e.g., "4 ", "10x ")
-                    # This pattern matches:
-                    # ^       - start of the string
-                    # \d+     - one or more digits
-                    # [xX\s]* - zero or more occurrences of 'x', 'X', or whitespace
-                    #           (to handle "4x Card Name" or "4 Card Name")
-                    # The rest of the line is captured by (.+)
-                    match = re.match(r"^\d+[xX\s]*(.+)", processed_line)
-                    if match:
-                        card_name = match.group(1).strip() # Get the captured card name and strip again
-                    else:
-                        card_name = processed_line # No leading count found, use the stripped line
                     
-                    if card_name: # Only add if not empty after processing
-                        card_names.append(card_name)
+                    # Check if the line starts with one or more digits
+                    if re.match(r"^\d+", processed_line):
+                        # If it does, remove the leading digits, optional 'x'/'X', and subsequent spaces
+                        # The pattern matches:
+                        # ^       - start of the string
+                        # \d+     - one or more digits (the count)
+                        # [xX\s]* - zero or more occurrences of 'x', 'X', or whitespace
+                        # The rest of the line (.+) is the card name we want to capture.
+                        match = re.match(r"^\d+[xX\s]*(.+)", processed_line)
+                        if match:
+                            card_name = match.group(1).strip() # Get the captured card name
+                            if card_name: # Ensure it's not empty after stripping
+                                card_names.append(card_name)
+                        # else:
+                            # This case should ideally not be hit if the line starts with digits
+                            # but the full pattern doesn't match (e.g. "4" with nothing after)
+                            # logger.debug(f"Line started with digits but didn't match full card pattern: '{processed_line}'")
+                    # Lines not starting with a digit are ignored
             
             if not card_names:
-                logger.warning(f"No valid card names found in input file: {self.input_file}")
+                logger.warning(f"No valid card names (lines starting with digits) found in input file: {self.input_file}")
+            else:
+                logger.info(f"Successfully loaded {len(card_names)} card names from decklist format.")
             return card_names
         except FileNotFoundError:
             logger.error(f"Input file not found: {self.input_file}")
-            # sys.exit(1) # Consider returning empty list or raising custom exception
             return [] 
         except Exception as e:
             logger.error(f"Error reading input file: {e}")
-            # sys.exit(1) # Same as above
             return []
     
     def process_cards(self) -> List[Dict]:
@@ -89,11 +95,8 @@ class ScryfallCardProcessor:
                          time.sleep(self.api_delay_seconds)
                     continue 
 
-                # Optional: Log raw card_data for deep debugging
-                # logger.debug(f"Raw card_data for '{card_name}' from API: {json.dumps(card_data, indent=2)}")
-
                 if self.api_delay_seconds > 0:
-                    logger.debug(f"Delaying for {self.api_delay_seconds * 1000:.0f}ms after Scryfall card data fetch for '{card_name}'...")
+                    # logger.debug(f"Delaying for {self.api_delay_seconds * 1000:.0f}ms after Scryfall card data fetch for '{card_name}'...")
                     time.sleep(self.api_delay_seconds)
                 
                 color_info = ColorDetector.get_color_info(card_data) 
