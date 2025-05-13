@@ -10,7 +10,6 @@ import logging
 import argparse
 from typing import List, Dict
 
-# Import modules
 from config import (
     init_logging,
     ccProto, ccHost, ccPort,
@@ -21,16 +20,14 @@ from frame_configs import get_frame_config
 from color_mapping import COLOR_CODE_MAP, RARITY_MAP
 from scryfall_processor import ScryfallCardProcessor
 
-# Initialize logging
 init_logging()
 logger = logging.getLogger(__name__)
 
 def main():
-    # Set up argument parser
     parser = argparse.ArgumentParser(description='Process MTG cards and create CardConjurer JSON')
     parser.add_argument('input_file', help='Path to the input file containing card names')
     parser.add_argument('--output_file', '-o', help='Path to the output JSON file', default='mtg_cards_output.cardconjurer')
-    parser.add_argument('--frame', '-f', help='Frame type to use', default='seventh', choices=['seventh', '8th', 'm15', 'm15ub']) # Added m15ub
+    parser.add_argument('--frame', '-f', help='Frame type to use', default='seventh', choices=['seventh', '8th', 'm15', 'm15ub']) 
     parser.add_argument('--frame_set', '-s', help='Frame set to use (only for seventh)', default='regular')
     parser.add_argument('--legendary_crowns', action='store_true', help='Add legendary crowns for M15/M15UB frames (if applicable)')
     parser.add_argument('--auto_fit_art', action='store_true', help='Automatically calculate art X, Y, and Zoom to fit frame')
@@ -41,14 +38,8 @@ def main():
     
     args = parser.parse_args()
     
-    # Validate frame type - argparse 'choices' already handles this.
-    # if args.frame not in ['seventh', '8th', 'm15', 'm15ub']:
-    #     logger.error(f"Invalid frame type: {args.frame}. Must be 'seventh', '8th', 'm15', or 'm15ub'")
-    #     sys.exit(1)
-
     calculated_api_delay_seconds = args.api_delay_ms / 1000.0
     if calculated_api_delay_seconds < 0:
-        logger.warning("API delay cannot be negative, using 0.")
         calculated_api_delay_seconds = 0
 
     processor = ScryfallCardProcessor(

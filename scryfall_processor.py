@@ -5,6 +5,7 @@ import sys
 import json
 import time
 import logging
+import re # Import the 're' module for regular expressions
 from typing import Dict, List, Optional
 
 from scryfall_api_utils import ScryfallAPI
@@ -27,29 +28,50 @@ class ScryfallCardProcessor:
         self.auto_fit_set_symbol = auto_fit_set_symbol
         self.api_delay_seconds = api_delay_seconds
         self.frame_config = get_frame_config(frame_type)
-        self.scryfall_api = ScryfallAPI()  # ScryfallAPI itself doesn't handle delays, the caller does
-        self.color_detector = ColorDetector()
-        self.card_builder = CardBuilder(frame_type, self.frame_config, frame_set, self.legendary_crowns, self.auto_fit_art, self.set_symbol_override, self.auto_fit_set_symbol)
+        self.scryfall_api = ScryfallAPI()  
+        self.color_detector = ColorDetector() 
+        self.card_builder = CardBuilder(frame_type, self.frame_config, frame_set, self.legendary_crowns, self.auto_fit_art, self.set_symbol_override, self.auto_fit_set_symbol, self.api_delay_seconds)
     
     def load_cards(self) -> List[str]:
-        """Load card names from input file."""
+        """Load card names from input file, stripping leading counts."""
+        card_names = []
         try:
             with open(self.input_file, 'r') as file:
-                # Strip whitespace and filter out empty lines
-                return [line.strip() for line in file if line.strip()]
+                for line in file:
+                    # Strip leading/trailing whitespace first
+                    processed_line = line.strip()
+                    # Use regex to remove leading digits and spaces (e.g., "4 ", "10x ")
+                    # This pattern matches:
+                    # ^       - start of the string
+                    # \d+     - one or more digits
+                    # [xX\s]* - zero or more occurrences of 'x', 'X', or whitespace
+                    #           (to handle "4x Card Name" or "4 Card Name")
+                    # The rest of the line is captured by (.+)
+                    match = re.match(r"^\d+[xX\s]*(.+)", processed_line)
+                    if match:
+                        card_name = match.group(1).strip() # Get the captured card name and strip again
+                    else:
+                        card_name = processed_line # No leading count found, use the stripped line
+                    
+                    if card_name: # Only add if not empty after processing
+                        card_names.append(card_name)
+            
+            if not card_names:
+                logger.warning(f"No valid card names found in input file: {self.input_file}")
+            return card_names
         except FileNotFoundError:
             logger.error(f"Input file not found: {self.input_file}")
-            sys.exit(1)
+            # sys.exit(1) # Consider returning empty list or raising custom exception
+            return [] 
         except Exception as e:
             logger.error(f"Error reading input file: {e}")
-            sys.exit(1)
+            # sys.exit(1) # Same as above
+            return []
     
-# --- In scryfall_processor.py ---
-
     def process_cards(self) -> List[Dict]:
         """Process all cards from the input file."""
         cards = self.load_cards()
-        if not cards: # If load_cards exited or returned empty
+        if not cards: 
             return []
             
         result = []
@@ -59,42 +81,26 @@ class ScryfallCardProcessor:
             logger.info(f"Processing card ({i+1}/{num_cards}): {card_name}")
             
             try:
-                # --- API CALL 1 (Scryfall card data) ---
-                # Assuming get_earliest_printing makes an API call to Scryfall
                 card_data = self.scryfall_api.get_earliest_printing(card_name)
                 
-                # --- DEBUGGING PRINT ---
-                if card_data:
-                    logger.debug(f"Raw card_data for '{card_name}' from API: {json.dumps(card_data, indent=2)}")
-                else:
-                    logger.warning(f"No card_data returned from API for '{card_name}' in processor.")
-                # --- END DEBUGGING ---
-                
-                # --- APPLY DELAY AFTER THIS API CALL (to Scryfall) ---
-                # This delay respects Scryfall's rate limits for the call above.
-                # CardBuilder will handle its own delays for its image/SVG fetches.
+                if not card_data: 
+                    logger.warning(f"No card data retrieved for {card_name}, skipping.")
+                    if self.api_delay_seconds > 0 and i < num_cards -1 : 
+                         time.sleep(self.api_delay_seconds)
+                    continue 
+
+                # Optional: Log raw card_data for deep debugging
+                # logger.debug(f"Raw card_data for '{card_name}' from API: {json.dumps(card_data, indent=2)}")
+
                 if self.api_delay_seconds > 0:
                     logger.debug(f"Delaying for {self.api_delay_seconds * 1000:.0f}ms after Scryfall card data fetch for '{card_name}'...")
                     time.sleep(self.api_delay_seconds)
-                # ------------------------------------
                 
-                if card_data:
-                    color_info = ColorDetector.get_color_info(card_data) # Local processing, no API call
-                    
-                    # CardBuilder.build_card_data internally handles delays for its network requests (art/symbol SVGs)
-                    # based on the self.api_delay_seconds it received.
-                    card_object = self.card_builder.build_card_data(card_name, card_data, color_info)
-                    result.append(card_object)
-                    
-                    # No additional fixed time.sleep(0.5) or other sleep is needed here.
-                    # The next iteration of the loop will apply a delay AFTER its Scryfall API call
-                    # if self.api_delay_seconds > 0.
-                else:
-                    # get_earliest_printing should ideally log if it can't find a card.
-                    # This is an additional log if it returns None unexpectedly.
-                    logger.error(f"No card data returned from Scryfall API for: {card_name}")
+                color_info = ColorDetector.get_color_info(card_data) 
+                card_object = self.card_builder.build_card_data(card_name, card_data, color_info)
+                result.append(card_object)
+
             except Exception as e:
-                # Log the full traceback for unexpected errors during processing of a single card
                 logger.error(f"Unexpected error processing card '{card_name}': {e}", exc_info=True)
         
         return result
