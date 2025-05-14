@@ -671,7 +671,30 @@ class CardBuilder:
         if self.auto_fit_set_symbol and set_symbol_source_url:
             auto_fit_symbol_params = self._calculate_auto_fit_set_symbol_params(set_symbol_source_url)
             if auto_fit_symbol_params: set_symbol_x, set_symbol_y, set_symbol_zoom = auto_fit_symbol_params["setSymbolX"], auto_fit_symbol_params["setSymbolY"], auto_fit_symbol_params["setSymbolZoom"]
-        
+
+        # --- P/T Text Construction with Asterisk Replacement for 8th frame ---
+        power_val = card_data.get('power', '')
+        toughness_val = card_data.get('toughness', '')
+        pt_text_final = ""
+
+        if 'power' in card_data and 'toughness' in card_data: # Ensure both keys exist, even if values are empty or *
+            # For 8th edition, replace standard asterisk with a Unicode alternative
+            if self.frame_type == "8th":
+                # Choose your preferred Unicode asterisk that renders well with matrixbsc
+                replacement_asterisk = "X"
+                # Option 1: Asterisk Operator (U+2217)
+                # replacement_asterisk = "\u2217" 
+                # Option 2: Low Asterisk (U+204E)
+                # replacement_asterisk = "\u204E" 
+                
+                if power_val == "*":
+                    power_val = replacement_asterisk
+                if toughness_val == "*":
+                    toughness_val = replacement_asterisk
+            
+            pt_text_final = f"{power_val}/{toughness_val}"
+        # --- End P/T Text Construction ---         
+
         card_obj = {"key": card_name, "data": { # REMOVED frame_type from key
                 "width": self.frame_config["width"], "height": self.frame_config["height"],
                 "marginX": self.frame_config.get("margin_x", 0), "marginY": self.frame_config.get("margin_y", 0),
@@ -705,9 +728,9 @@ class CardBuilder:
                         **self.frame_config.get("text", {}).get("rules", {}),
                         "text": final_rules_text 
                     },
-                    "pt": {
+                    "pt": { # MODIFIED TO USE pt_text_final
                         **self.frame_config.get("text", {}).get("pt", {}),
-                        "text": f"{card_data.get('power', '')}/{card_data.get('toughness', '')}" if 'power' in card_data and 'toughness' in card_data else ""
+                        "text": pt_text_final 
                     }
                 },
                 "infoNumber": DEFAULT_INFO_NUMBER, "infoRarity": rarity_code_for_symbol.upper() if rarity_code_for_symbol else DEFAULT_INFO_RARITY, 
