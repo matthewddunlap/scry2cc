@@ -625,6 +625,26 @@ class CardBuilder:
             mana_symbols = ["/js/frames/manaSymbolsFAB.js", "/js/frames/manaSymbolsBreakingNews.js"] # Corrected case
             if self.frame_type == "seventh": mana_symbols = ["/js/frames/manaSymbolsFuture.js", "/js/frames/manaSymbolsOld.js"]
 
+        # --- START: FLAVOR TEXT INTEGRATION (NEW LOGIC) ---
+        oracle_text_from_scryfall = card_data.get('oracle_text', '')
+        flavor_text_from_scryfall = card_data.get('flavor_text') # Will be None if key doesn't exist
+
+        final_rules_text = oracle_text_from_scryfall
+        # Determine initial showsFlavorBar based on frame config, may be overridden
+        shows_flavor_bar_for_this_card = self.frame_config.get("shows_flavor_bar", False) 
+
+        if flavor_text_from_scryfall:
+            # Clean the flavor text: remove asterisks
+            cleaned_flavor_text = flavor_text_from_scryfall.replace('*', '')
+            
+            if final_rules_text: # If there's oracle text, add a newline before {flavor}
+                final_rules_text += "{flavor}" + cleaned_flavor_text
+            else: # If no oracle text, just start with {flavor}
+                final_rules_text = "{flavor}" + cleaned_flavor_text
+            
+            shows_flavor_bar_for_this_card = True # Override to true if flavor text is present
+        # --- END: FLAVOR TEXT INTEGRATION ---
+
         set_code_from_scryfall = card_data.get('set', DEFAULT_INFO_SET)
         rarity_from_scryfall = card_data.get('rarity', 'c')
         rarity_code_for_symbol = RARITY_MAP.get(rarity_from_scryfall, rarity_from_scryfall)
@@ -668,8 +688,28 @@ class CardBuilder:
                 "onload": self.frame_config.get("onload", None), "hideBottomInfoBorder": self.frame_config.get("hideBottomInfoBorder", False),
                 "bottomInfo": self.frame_config.get("bottom_info", {}), "artBounds": self.frame_config.get("art_bounds", {}),
                 "setSymbolBounds": self.frame_config.get("set_symbol_bounds", {}), "watermarkBounds": self.frame_config.get("watermark_bounds", {}),
-                "text": {key: {**self.frame_config.get("text", {}).get(key, {}), "text": card_data.get(scryfall_key, '') if scryfall_key else (f"{card_data.get('power', '')}/{card_data.get('toughness', '')}" if key == "pt" and 'power' in card_data else "")}
-                         for key, scryfall_key in [("mana", "mana_cost"), ("title", "name"), ("type", "type_line"), ("rules", "oracle_text"), ("pt", None)]},
+                                "text": { # MODIFIED TEXT POPULATION TO FIX ERROR
+                    "mana": {
+                        **self.frame_config.get("text", {}).get("mana", {}),
+                        "text": card_data.get('mana_cost', '')
+                    },
+                    "title": {
+                        **self.frame_config.get("text", {}).get("title", {}),
+                        "text": card_data.get('name', card_name)
+                    },
+                    "type": {
+                        **self.frame_config.get("text", {}).get("type", {}),
+                        "text": card_data.get('type_line', 'Instant')
+                    },
+                    "rules": { 
+                        **self.frame_config.get("text", {}).get("rules", {}),
+                        "text": final_rules_text 
+                    },
+                    "pt": {
+                        **self.frame_config.get("text", {}).get("pt", {}),
+                        "text": f"{card_data.get('power', '')}/{card_data.get('toughness', '')}" if 'power' in card_data and 'toughness' in card_data else ""
+                    }
+                },
                 "infoNumber": DEFAULT_INFO_NUMBER, "infoRarity": rarity_code_for_symbol.upper() if rarity_code_for_symbol else DEFAULT_INFO_RARITY, 
                 "infoSet": set_code_from_scryfall.upper(), "infoLanguage": DEFAULT_INFO_LANGUAGE, "infoArtist": artist_name, "infoNote": DEFAULT_INFO_NOTE,
                 "noCorners": self.frame_config.get("noCorners", True)}}
