@@ -607,7 +607,10 @@ class CardBuilder:
         generated_frames.extend(main_frame_layers)
         return generated_frames
     
-    def build_card_data(self, card_name: str, card_data: Dict, color_info) -> Dict:
+    def build_card_data(self, card_name: str, card_data: Dict, color_info, 
+                        is_basic_land_fetch_mode: bool = False, # ADDED for basic land feature
+                        basic_land_type_override: Optional[str] = None) -> Dict: # ADDED for basic land feature
+    
         logger.debug(f"build_card_data for '{card_name}', frame_type '{self.frame_type}'. Keys in card_data: {list(card_data.keys())}")
         if 'power' in card_data and 'toughness' in card_data:
             logger.debug(f"P/T found in card_data for '{card_name}': P={card_data.get('power')}, T={card_data.get('toughness')}")
@@ -625,25 +628,36 @@ class CardBuilder:
             mana_symbols = ["/js/frames/manaSymbolsFAB.js", "/js/frames/manaSymbolsBreakingNews.js"] # Corrected case
             if self.frame_type == "seventh": mana_symbols = ["/js/frames/manaSymbolsFuture.js", "/js/frames/manaSymbolsOld.js"]
 
-        # --- START: FLAVOR TEXT INTEGRATION (NEW LOGIC) ---
+        # --- START: FLAVOR TEXT & BASIC LAND RULES TEXT MODIFICATION ---
         oracle_text_from_scryfall = card_data.get('oracle_text', '')
-        flavor_text_from_scryfall = card_data.get('flavor_text') # Will be None if key doesn't exist
+        flavor_text_from_scryfall = card_data.get('flavor_text') 
 
-        final_rules_text = oracle_text_from_scryfall
-        # Determine initial showsFlavorBar based on frame config, may be overridden
+        final_rules_text = oracle_text_from_scryfall # Default to oracle text
         shows_flavor_bar_for_this_card = self.frame_config.get("shows_flavor_bar", False) 
 
-        if flavor_text_from_scryfall:
-            # Clean the flavor text: remove asterisks
+        if is_basic_land_fetch_mode and basic_land_type_override: # Check for basic land mode FIRST
+            produced = card_data.get("produced_mana")
+            if produced and isinstance(produced, list) and len(produced) > 0:
+                mana_char = produced[0] 
+                final_rules_text = f"{{fontsize450}}{{center}}{{down90}}{{{mana_char.lower()}}}"
+                # For this specific style of basic land, we typically don't want a flavor bar,
+                # and flavor text itself is ignored in favor of the large mana symbol.
+                shows_flavor_bar_for_this_card = False 
+                if flavor_text_from_scryfall: 
+                    logger.debug(f"Basic land '{card_name}' has flavor text, but it's being overridden by mana symbol display for this mode.")
+            else:
+                logger.warning(f"Basic land '{card_name}' in fetch mode but 'produced_mana' is missing or invalid: {produced}. Rules text will be empty.")
+                final_rules_text = "" # Fallback to empty if no mana symbol found
+        
+        elif flavor_text_from_scryfall: # This runs ONLY if NOT in basic_land_fetch_mode AND flavor_text exists
             cleaned_flavor_text = flavor_text_from_scryfall.replace('*', '')
-            
-            if final_rules_text: # If there's oracle text, add a newline before {flavor}
-                final_rules_text += "{flavor}" + cleaned_flavor_text
-            else: # If no oracle text, just start with {flavor}
+            if final_rules_text: # If there's already oracle text
+                final_rules_text += "\n{flavor}" + cleaned_flavor_text
+            else: # If no oracle text, just the flavor text
                 final_rules_text = "{flavor}" + cleaned_flavor_text
             
-            shows_flavor_bar_for_this_card = True # Override to true if flavor text is present
-        # --- END: FLAVOR TEXT INTEGRATION ---
+            shows_flavor_bar_for_this_card = True # Ensure flavor bar is shown if flavor text is present
+        # --- END: FLAVOR TEXT & BASIC LAND RULES TEXT MODIFICATION --
 
         set_code_from_scryfall = card_data.get('set', DEFAULT_INFO_SET)
         rarity_from_scryfall = card_data.get('rarity', 'c')
@@ -695,6 +709,21 @@ class CardBuilder:
             pt_text_final = f"{power_val}/{toughness_val}"
         # --- End P/T Text Construction ---         
 
+        # card_name passed to this function is the key for the card object.
+        # For basic lands, ScryfallProcessor will pass the unique key (e.g., "Forest-lea-123").
+        # For other cards, it's just the card name.
+        final_card_key_name = card_name 
+        
+        # --- NEW: Basic Land Title Override ---
+        # If in basic land fetch mode, the title displayed on the card should be the generic land type.
+        # The 'name' field from Scryfall for basics can be like "Forest (Alpha)".
+        # The card_key (final_card_key_name) already has the generic name for basics.
+        display_title = basic_land_type_override if is_basic_land_fetch_mode and basic_land_type_override else card_data.get('name', card_name)
+
+        # --- NEW: Determine display title for basic lands ---
+        display_title_text = basic_land_type_override if is_basic_land_fetch_mode and basic_land_type_override else card_data.get('name', card_name)
+        # --- END: Determine display title ---
+
         card_obj = {"key": card_name, "data": { # REMOVED frame_type from key
                 "width": self.frame_config["width"], "height": self.frame_config["height"],
                 "marginX": self.frame_config.get("margin_x", 0), "marginY": self.frame_config.get("margin_y", 0),
@@ -718,7 +747,7 @@ class CardBuilder:
                     },
                     "title": {
                         **self.frame_config.get("text", {}).get("title", {}),
-                        "text": card_data.get('name', card_name)
+                        "text": display_title_text # Use the determined display_title_text
                     },
                     "type": {
                         **self.frame_config.get("text", {}).get("type", {}),
