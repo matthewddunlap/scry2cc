@@ -51,49 +51,87 @@ class CardBuilder:
         if match: return match.group(1)
         else: logger.warning(f"Could not extract set_code from URL: {url}"); return None
 
-    def _calculate_auto_fit_set_symbol_params(self, set_symbol_url: str) -> Optional[Dict[str, float]]:
-        set_code = self._extract_set_code_from_url(set_symbol_url) 
+    def _calculate_auto_fit_set_symbol_params(self, set_symbol_url: str) -> Optional[Dict[str, any]]: # Return type updated for clarity
+        """
+        Calculates auto-fit parameters for a set symbol.
+        Returns a dictionary with parameters and status, or None if critical config is missing before fetch.
+        Status in dict: 'success_lookup', 'success_calculated', 'fetch_error', 'processing_error', 'calculation_issue_default_fallback'.
+        """
+        set_code = self._extract_set_code_from_url(set_symbol_url)
         if set_code:
-            lookup_key = f"{set_code}-{self.frame_type.lower()}" 
+            lookup_key = f"{set_code}-{self.frame_type.lower()}"
             if lookup_key in self.symbol_placement_lookup:
                 fixed_params = self.symbol_placement_lookup[lookup_key]
                 if isinstance(fixed_params, dict) and all(k in fixed_params for k in ('x', 'y', 'zoom')):
                     logger.info(f"Using fixed placement for '{lookup_key}' from lookup table: X={fixed_params['x']:.4f}, Y={fixed_params['y']:.4f}, Zoom={fixed_params['zoom']:.4f}")
-                    return {"setSymbolX": fixed_params['x'], "setSymbolY": fixed_params['y'], "setSymbolZoom": fixed_params['zoom']}
-                else: logger.warning(f"Invalid data structure for '{lookup_key}' in symbol_placements.json. Proceeding to fallback.")
-            else: logger.info(f"No fixed placement found for '{lookup_key}' in lookup table. Proceeding to fallback calculation.")
-        else: logger.warning(f"Could not extract set_code from URL '{set_symbol_url}' for lookup. Proceeding to fallback calculation.")
+                    return {
+                        "setSymbolX": fixed_params['x'],
+                        "setSymbolY": fixed_params['y'],
+                        "setSymbolZoom": fixed_params['zoom'],
+                        "_status": "success_lookup"
+                    }
+                else:
+                    logger.warning(f"Invalid data structure for '{lookup_key}' in symbol_placements.json. Proceeding to fallback calculation.")
+            else:
+                logger.info(f"No fixed placement found for '{lookup_key}' in lookup table. Proceeding to fallback calculation.")
+        else:
+            logger.warning(f"Could not extract set_code from URL '{set_symbol_url}' for lookup. Proceeding to fallback calculation.")
 
         try:
-            response = requests.get(set_symbol_url, timeout=10); response.raise_for_status(); svg_bytes = response.content
-            if self.api_delay_seconds > 0: time.sleep(self.api_delay_seconds)
-            
+            response = requests.get(set_symbol_url, timeout=10)
+            response.raise_for_status()  # Raises HTTPError for 4xx/5xx
+            svg_bytes = response.content
+            if self.api_delay_seconds > 0 and response.from_cache is False if hasattr(response, 'from_cache') else True : # Avoid delay if cached, if library supports
+                time.sleep(self.api_delay_seconds)
+
             svg_dims = self._get_svg_dimensions(svg_bytes)
-            if not svg_dims or svg_dims["width"] <= 0 or svg_dims["height"] <= 0: return None
+            if not svg_dims or svg_dims["width"] <= 0 or svg_dims["height"] <= 0:
+                logger.warning(f"Could not determine valid SVG dimensions for {set_symbol_url}. Auto-fit will use default positioning values. Symbol URL will still be used.")
+                return {"_status": "calculation_issue_default_fallback"} # Indicates original URL should be tried with default params
+
             svg_intrinsic_width, svg_intrinsic_height = svg_dims["width"], svg_dims["height"]
 
-            card_total_width = self.frame_config.get("width"); card_total_height = self.frame_config.get("height")
+            # --- Card and Frame Configuration ---
+            card_total_width = self.frame_config.get("width")
+            card_total_height = self.frame_config.get("height")
             symbol_bounds_config = self.frame_config.get("set_symbol_bounds")
             target_align_x_right_rel = self.frame_config.get("set_symbol_align_x_right")
             target_align_y_center_rel = self.frame_config.get("set_symbol_align_y_center")
 
-            if not (card_total_width and card_total_height and symbol_bounds_config and isinstance(symbol_bounds_config, dict) and all(k in symbol_bounds_config for k in ('x','y','width', 'height')) and target_align_x_right_rel is not None and target_align_y_center_rel is not None):
-                return {"setSymbolX": 0.9, "setSymbolY": 0.58, "setSymbolZoom": 0.3} 
-            if card_total_width <= 0 or card_total_height <= 0: return None
+            if not (card_total_width and card_total_height and symbol_bounds_config and isinstance(symbol_bounds_config, dict) and
+                    all(k in symbol_bounds_config for k in ('x', 'y', 'width', 'height')) and
+                    target_align_x_right_rel is not None and target_align_y_center_rel is not None):
+                logger.warning(f"Frame configuration incomplete for set symbol auto-fit with {set_symbol_url}. Using default positioning values. Symbol URL will still be used.")
+                # Old behavior: return {"setSymbolX": 0.9, "setSymbolY": 0.58, "setSymbolZoom": 0.3}
+                return {"_status": "calculation_issue_default_fallback"} # Indicates original URL should be tried with default params
             
-            s_bound_rel_x = symbol_bounds_config["x"]; s_bound_rel_y = symbol_bounds_config["y"]
-            s_bound_rel_width = symbol_bounds_config["width"]; s_bound_rel_height = symbol_bounds_config["height"]
-            if s_bound_rel_width <= 0 or s_bound_rel_height <= 0: return None
-            
+            if card_total_width <= 0 or card_total_height <= 0:
+                logger.warning(f"Invalid card dimensions in frame config for set symbol auto-fit with {set_symbol_url}.")
+                return {"_status": "calculation_issue_default_fallback"}
+
+            s_bound_rel_x = symbol_bounds_config["x"]
+            s_bound_rel_y = symbol_bounds_config["y"]
+            s_bound_rel_width = symbol_bounds_config["width"]
+            s_bound_rel_height = symbol_bounds_config["height"]
+
+            if s_bound_rel_width <= 0 or s_bound_rel_height <= 0:
+                logger.warning(f"Invalid set symbol bounds in frame config for auto-fit with {set_symbol_url}.")
+                return {"_status": "calculation_issue_default_fallback"}
+
             target_abs_symbol_box_width = s_bound_rel_width * card_total_width
             target_abs_symbol_box_height = s_bound_rel_height * card_total_height
 
-            if svg_intrinsic_width <= 0 or svg_intrinsic_height <= 0: return None
+            # SVG intrinsic width/height already checked by svg_dims validation
+
             scale_x_factor = target_abs_symbol_box_width / svg_intrinsic_width
             scale_y_factor = target_abs_symbol_box_height / svg_intrinsic_height
             calculated_zoom = min(scale_x_factor, scale_y_factor)
-            if calculated_zoom <= 1e-6: return None
 
+            if calculated_zoom <= 1e-6: # Effectively zero or negative zoom
+                logger.warning(f"Calculated zoom for set symbol is too small or invalid for {set_symbol_url}. Using default positioning values. Symbol URL will still be used.")
+                return {"_status": "calculation_issue_default_fallback"}
+
+            # ... (rest of the calculation as before) ...
             scaled_symbol_on_card_width_px = svg_intrinsic_width * calculated_zoom
             scaled_symbol_on_card_height_px = svg_intrinsic_height * calculated_zoom
                         
@@ -102,10 +140,26 @@ class CardBuilder:
             calculated_set_symbol_x_relative = target_align_x_right_rel - scaled_symbol_width_rel
             scaled_symbol_half_height_rel = scaled_symbol_height_rel / 2.0
             calculated_set_symbol_y_relative = target_align_y_center_rel - scaled_symbol_half_height_rel
-            return {"setSymbolX": calculated_set_symbol_x_relative, "setSymbolY": calculated_set_symbol_y_relative, "setSymbolZoom": calculated_zoom}
-        except Exception as e: 
-            logger.error(f"Error during fallback set symbol calculation for {set_symbol_url}: {e}", exc_info=True)
-            return None
+            return {
+                "setSymbolX": calculated_set_symbol_x_relative,
+                "setSymbolY": calculated_set_symbol_y_relative,
+                "setSymbolZoom": calculated_zoom,
+                "_status": "success_calculated"
+            }
+
+        except requests.exceptions.HTTPError as http_err:
+            logger.error(f"HTTP error fetching set symbol SVG for auto-fit from {set_symbol_url}: {http_err}")
+            return {"_status": "fetch_error"}
+        except requests.RequestException as req_err: # Catches other network errors (timeout, DNS, etc.)
+            logger.error(f"Network request error fetching set symbol SVG for auto-fit from {set_symbol_url}: {req_err}")
+            return {"_status": "fetch_error"}
+        except etree.XMLSyntaxError as xml_err: # Catch specific XML parsing errors from _get_svg_dimensions
+             logger.error(f"Error parsing SVG content for {set_symbol_url}: {xml_err}. Auto-fit will use default positioning values.")
+             return {"_status": "processing_error"} # SVG fetched, but unusable
+        except Exception as e:
+            # Catch-all for other unexpected errors during the process
+            logger.error(f"Unexpected error during set symbol auto-fit calculation for {set_symbol_url}: {e}", exc_info=True)
+            return {"_status": "processing_error"} # Treat as a processing error; fetch might have occurred.
 
     def _get_svg_dimensions(self, svg_content_bytes: bytes) -> Optional[Dict[str, float]]:
         if not svg_content_bytes: return None
