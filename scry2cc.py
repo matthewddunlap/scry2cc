@@ -1,3 +1,4 @@
+# --- scry2cc.py ---
 #!/usr/bin/env python3
 """
 MTG Scryfall to CardConjurer Converter
@@ -12,11 +13,8 @@ from typing import List, Dict
 
 from config import (
     init_logging,
-    ccProto, ccHost, ccPort,
-    DEFAULT_INFO_YEAR, DEFAULT_INFO_RARITY, DEFAULT_INFO_SET,
-    DEFAULT_INFO_LANGUAGE, DEFAULT_INFO_ARTIST, DEFAULT_INFO_NOTE, DEFAULT_INFO_NUMBER, DEFAULT_API_DELAY_MS 
+    DEFAULT_API_DELAY_MS 
 )
-from frame_configs import get_frame_config
 from scryfall_processor import ScryfallCardProcessor
 
 init_logging()
@@ -27,7 +25,6 @@ def main():
     
     parser.add_argument('input_file', nargs='?', default=None, 
                         help='Path to the input file containing card names. Ignored if --fetch_basic_land is used.')
-    
     parser.add_argument('--output_file', '-o', help='Path to the output JSON file', default='mtg_cards_output.cardconjurer')
     parser.add_argument('--frame', '-f', help='Frame type to use', default='seventh', choices=['seventh', '8th', 'm15', 'm15ub']) 
     parser.add_argument('--frame_set', '-s', help='Frame set to use (only for seventh)', default='regular')
@@ -38,40 +35,53 @@ def main():
                         help='Override the set symbol using this code (e.g., "myset", "proxy"). Rarity is still used.')
     parser.add_argument('--api_delay_ms', type=int, default=DEFAULT_API_DELAY_MS, 
                         help=f'Delay in milliseconds between Scryfall API calls (default: {DEFAULT_API_DELAY_MS}ms)')
-    
     parser.add_argument('--fetch_basic_land', type=str, default=None, 
                         choices=['Forest', 'Island', 'Mountain', 'Plains', 'Swamp'],
                         help='Fetch all non-full-art printings (unique by art) of a specific basic land type. If used, input_file is ignored.')
+
+    upscaling_group = parser.add_argument_group('Upscaling Options')
+    upscaling_group.add_argument('--upscale_art', action='store_true', help='Enable art upscaling via Ilaria Upscaler.')
+    upscaling_group.add_argument('--ilaria_base_url', type=str, default=None, help='Base URL of the Ilaria Upscaler (e.g., http://localhost:7860).')
+    upscaling_group.add_argument('--upscaler_model_name', type=str, default="RealESRGAN_x2plus", help='Upscaler model name (default: RealESRGAN_x2plus).')
+    upscaling_group.add_argument('--upscaler_outscale_factor', type=int, default=2, help='Upscale factor (default: 2).')
+    upscaling_group.add_argument('--upscaler_denoise_strength', type=float, default=0.5, help='Denoise strength (default: 0.5).')
+    upscaling_group.add_argument('--upscaler_face_enhance', action='store_true', help='Enable face enhancement (default: False).')
+
+    image_server_group = parser.add_argument_group('Image Server Options (Nginx WebDAV)')
+    image_server_group.add_argument('--image_server_base_url', type=str, default=None, 
+                                   help='Base URL of the Nginx WebDAV image server (e.g., http://localhost:8088). Required if --upscale_art is used for hosting.')
+    image_server_group.add_argument('--image_server_path_prefix', type=str, default="/webdav_images",
+                                   help='Base path prefix on image server (default: /webdav_images).')
     
     args = parser.parse_args()
-
-    # --- DEBUG ARGS ---
-    print(f"DEBUG: Parsed args: {args}") 
-    # --- END DEBUG ---
+    logger.debug(f"Parsed args: {args}") 
 
     if not args.input_file and not args.fetch_basic_land:
-        parser.error("Either an input_file or the --fetch_basic_land option must be specified.")
+        parser.error("Either an input_file or --fetch_basic_land must be specified.")
     
-    effective_input_file = args.input_file
-    if args.fetch_basic_land:
-        if args.input_file: 
-            logger.warning(f"--fetch_basic_land ('{args.fetch_basic_land}') is specified; input_file ('{args.input_file}') will be ignored.")
-        effective_input_file = None 
-
-    calculated_api_delay_seconds = args.api_delay_ms / 1000.0
-    if calculated_api_delay_seconds < 0:
-        calculated_api_delay_seconds = 0.0
+    if args.upscale_art and (not args.ilaria_base_url or not args.image_server_base_url):
+        parser.error("--ilaria_base_url and --image_server_base_url are required when --upscale_art is enabled.")
 
     processor = ScryfallCardProcessor(
-        input_file=effective_input_file, 
+        input_file=args.input_file if not args.fetch_basic_land else None, 
         frame_type=args.frame, 
         frame_set=args.frame_set, 
         legendary_crowns=args.legendary_crowns, 
         auto_fit_art=args.auto_fit_art,
         set_symbol_override=args.set_symbol_override,
         auto_fit_set_symbol=args.auto_fit_set_symbol,
-        api_delay_seconds=calculated_api_delay_seconds,
-        fetch_basic_land_type=args.fetch_basic_land 
+        api_delay_seconds=max(0, args.api_delay_ms / 1000.0),
+        fetch_basic_land_type=args.fetch_basic_land,
+        
+        upscale_art=args.upscale_art,
+        ilaria_upscaler_base_url=args.ilaria_base_url,
+        upscaler_model_name=args.upscaler_model_name,
+        upscaler_outscale_factor=args.upscaler_outscale_factor,
+        upscaler_denoise_strength=args.upscaler_denoise_strength,
+        upscaler_face_enhance=args.upscaler_face_enhance,
+        
+        image_server_base_url=args.image_server_base_url,
+        image_server_path_prefix=args.image_server_path_prefix
     )
     result = processor.process_cards()
     processor.save_output(args.output_file, result)

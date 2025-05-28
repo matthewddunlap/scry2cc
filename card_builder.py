@@ -3,11 +3,14 @@
 Module for building card data structure from Scryfall data
 """
 import logging
-from typing import Dict, List, Optional, Union
+from typing import Dict, List, Optional, Union, Tuple
 import io 
 import re 
 import json
 import time
+import os
+import base64
+import unicodedata # For sanitizing filenames
 
 import requests 
 from PIL import Image 
@@ -22,10 +25,39 @@ from color_mapping import COLOR_CODE_MAP, RARITY_MAP
 
 logger = logging.getLogger(__name__)
 
+def sanitize_for_filename(value: str) -> str:
+    """
+    Sanitizes a string to be safe for filenames and URL paths.
+    Converts to lowercase, replaces spaces and special characters with hyphens.
+    """
+    if not isinstance(value, str):
+        value = str(value)
+    value = unicodedata.normalize('NFKD', value).encode('ascii', 'ignore').decode('ascii')
+    value = re.sub(r'[\s/:<>:"\\|?*]+', '-', value)
+    value = re.sub(r'-+', '-', value).strip('-')
+    return value.lower()
+
+
 class CardBuilder:
     """Class for building card data from Scryfall data"""
     
-    def __init__(self, frame_type: str, frame_config: Dict, frame_set: str = "regular", legendary_crowns: bool = False, auto_fit_art: bool = False, set_symbol_override: Optional[str] = None, auto_fit_set_symbol: bool = False, api_delay_seconds: float = 0.1):
+    def __init__(self, frame_type: str, frame_config: Dict, frame_set: str = "regular", 
+                 legendary_crowns: bool = False, auto_fit_art: bool = False, 
+                 set_symbol_override: Optional[str] = None, auto_fit_set_symbol: bool = False, 
+                 api_delay_seconds: float = 0.1,
+                 upscale_art: bool = False,
+                 
+                 # Ilaria Upscaler params
+                 ilaria_upscaler_base_url: Optional[str] = None, 
+                 upscaler_model_name: str = "RealESRGAN_x2plus", 
+                 upscaler_outscale_factor: int = 2, 
+                 upscaler_denoise_strength: float = 0.5, 
+                 upscaler_face_enhance: bool = False,
+
+                 # Nginx WebDAV Image Hosting params
+                 image_server_base_url: Optional[str] = None, 
+                 image_server_path_prefix: str = "/webdav_images" 
+                ):
         self.frame_type = frame_type
         self.frame_config = frame_config
         self.frame_set = frame_set
@@ -34,6 +66,20 @@ class CardBuilder:
         self.set_symbol_override = set_symbol_override
         self.auto_fit_set_symbol = auto_fit_set_symbol
         self.api_delay_seconds = api_delay_seconds
+        self.upscale_art = upscale_art
+        
+        self.ilaria_upscaler_base_url = ilaria_upscaler_base_url
+        self.upscaler_model_name = upscaler_model_name
+        self.upscaler_outscale_factor = upscaler_outscale_factor
+        self.upscaler_denoise_strength = upscaler_denoise_strength
+        self.upscaler_face_enhance = upscaler_face_enhance
+
+        self.image_server_base_url = image_server_base_url
+        self.image_server_path_prefix = "/" + image_server_path_prefix.strip("/") + "/" if image_server_path_prefix else "/"
+        
+        if self.upscale_art and (not self.ilaria_upscaler_base_url or not self.image_server_base_url):
+            logger.warning("Upscaling is enabled, but Ilaria Upscaler URL or Image Server URL is not configured. Upscaling/hosting will be skipped if a URL is missing.")
+
         self.symbol_placement_lookup = {}
         if self.auto_fit_set_symbol: 
             try:
@@ -51,238 +97,232 @@ class CardBuilder:
         if match: return match.group(1)
         else: logger.warning(f"Could not extract set_code from URL: {url}"); return None
 
-    def _calculate_auto_fit_set_symbol_params(self, set_symbol_url: str) -> Optional[Dict[str, any]]: # Return type updated for clarity
-        """
-        Calculates auto-fit parameters for a set symbol.
-        Returns a dictionary with parameters and status, or None if critical config is missing before fetch.
-        Status in dict: 'success_lookup', 'success_calculated', 'fetch_error', 'processing_error', 'calculation_issue_default_fallback'.
-        """
+    def _calculate_auto_fit_set_symbol_params(self, set_symbol_url: str) -> Optional[Dict[str, any]]:
         set_code = self._extract_set_code_from_url(set_symbol_url)
         if set_code:
             lookup_key = f"{set_code}-{self.frame_type.lower()}"
             if lookup_key in self.symbol_placement_lookup:
                 fixed_params = self.symbol_placement_lookup[lookup_key]
                 if isinstance(fixed_params, dict) and all(k in fixed_params for k in ('x', 'y', 'zoom')):
-                    logger.info(f"Using fixed placement for '{lookup_key}' from lookup table: X={fixed_params['x']:.4f}, Y={fixed_params['y']:.4f}, Zoom={fixed_params['zoom']:.4f}")
-                    return {
-                        "setSymbolX": fixed_params['x'],
-                        "setSymbolY": fixed_params['y'],
-                        "setSymbolZoom": fixed_params['zoom'],
-                        "_status": "success_lookup"
-                    }
-                else:
-                    logger.warning(f"Invalid data structure for '{lookup_key}' in symbol_placements.json. Proceeding to fallback calculation.")
-            else:
-                logger.info(f"No fixed placement found for '{lookup_key}' in lookup table. Proceeding to fallback calculation.")
-        else:
-            logger.warning(f"Could not extract set_code from URL '{set_symbol_url}' for lookup. Proceeding to fallback calculation.")
+                    return { "setSymbolX": fixed_params['x'], "setSymbolY": fixed_params['y'], "setSymbolZoom": fixed_params['zoom'], "_status": "success_lookup" }
+                else: logger.warning(f"Invalid data for '{lookup_key}' in symbol_placements.json.")
+            # else: logger.info(f"No fixed placement for '{lookup_key}' in lookup. Calculating.") # Can be noisy
+        # else: logger.warning(f"Could not extract set_code from URL '{set_symbol_url}'. Calculating.") # Can be noisy
 
         try:
-            response = requests.get(set_symbol_url, timeout=10)
-            response.raise_for_status()  # Raises HTTPError for 4xx/5xx
+            response = requests.get(set_symbol_url, timeout=10); response.raise_for_status()
             svg_bytes = response.content
-            if self.api_delay_seconds > 0 and response.from_cache is False if hasattr(response, 'from_cache') else True : # Avoid delay if cached, if library supports
+            if self.api_delay_seconds > 0 and (not hasattr(response, 'from_cache') or response.from_cache is False if hasattr(response, 'from_cache') else True):
                 time.sleep(self.api_delay_seconds)
-
             svg_dims = self._get_svg_dimensions(svg_bytes)
             if not svg_dims or svg_dims["width"] <= 0 or svg_dims["height"] <= 0:
-                logger.warning(f"Could not determine valid SVG dimensions for {set_symbol_url}. Auto-fit will use default positioning values. Symbol URL will still be used.")
-                return {"_status": "calculation_issue_default_fallback"} # Indicates original URL should be tried with default params
-
-            svg_intrinsic_width, svg_intrinsic_height = svg_dims["width"], svg_dims["height"]
-
-            # --- Card and Frame Configuration ---
+                logger.warning(f"Could not determine valid SVG dimensions for {set_symbol_url}. Using defaults.")
+                return {"_status": "calculation_issue_default_fallback"}
+            
             card_total_width = self.frame_config.get("width")
             card_total_height = self.frame_config.get("height")
             symbol_bounds_config = self.frame_config.get("set_symbol_bounds")
             target_align_x_right_rel = self.frame_config.get("set_symbol_align_x_right")
             target_align_y_center_rel = self.frame_config.get("set_symbol_align_y_center")
 
-            if not (card_total_width and card_total_height and symbol_bounds_config and isinstance(symbol_bounds_config, dict) and
-                    all(k in symbol_bounds_config for k in ('x', 'y', 'width', 'height')) and
+            if not (card_total_width and card_total_height and symbol_bounds_config and 
+                    isinstance(symbol_bounds_config, dict) and all(k in symbol_bounds_config for k in ('x', 'y', 'width', 'height')) and
                     target_align_x_right_rel is not None and target_align_y_center_rel is not None):
-                logger.warning(f"Frame configuration incomplete for set symbol auto-fit with {set_symbol_url}. Using default positioning values. Symbol URL will still be used.")
-                # Old behavior: return {"setSymbolX": 0.9, "setSymbolY": 0.58, "setSymbolZoom": 0.3}
-                return {"_status": "calculation_issue_default_fallback"} # Indicates original URL should be tried with default params
+                logger.warning(f"Frame config incomplete for set symbol auto-fit with {set_symbol_url}. Using defaults.")
+                return {"_status": "calculation_issue_default_fallback"}
             
-            if card_total_width <= 0 or card_total_height <= 0:
-                logger.warning(f"Invalid card dimensions in frame config for set symbol auto-fit with {set_symbol_url}.")
-                return {"_status": "calculation_issue_default_fallback"}
-
-            s_bound_rel_x = symbol_bounds_config["x"]
-            s_bound_rel_y = symbol_bounds_config["y"]
-            s_bound_rel_width = symbol_bounds_config["width"]
-            s_bound_rel_height = symbol_bounds_config["height"]
-
-            if s_bound_rel_width <= 0 or s_bound_rel_height <= 0:
-                logger.warning(f"Invalid set symbol bounds in frame config for auto-fit with {set_symbol_url}.")
-                return {"_status": "calculation_issue_default_fallback"}
-
-            target_abs_symbol_box_width = s_bound_rel_width * card_total_width
-            target_abs_symbol_box_height = s_bound_rel_height * card_total_height
-
-            # SVG intrinsic width/height already checked by svg_dims validation
-
-            scale_x_factor = target_abs_symbol_box_width / svg_intrinsic_width
-            scale_y_factor = target_abs_symbol_box_height / svg_intrinsic_height
+            scale_x_factor = (symbol_bounds_config["width"] * card_total_width) / svg_dims["width"]
+            scale_y_factor = (symbol_bounds_config["height"] * card_total_height) / svg_dims["height"]
             calculated_zoom = min(scale_x_factor, scale_y_factor)
-
-            if calculated_zoom <= 1e-6: # Effectively zero or negative zoom
-                logger.warning(f"Calculated zoom for set symbol is too small or invalid for {set_symbol_url}. Using default positioning values. Symbol URL will still be used.")
+            if calculated_zoom <= 1e-6: 
+                logger.warning(f"Calculated zoom for set symbol too small for {set_symbol_url}. Using defaults.")
                 return {"_status": "calculation_issue_default_fallback"}
 
-            # ... (rest of the calculation as before) ...
-            scaled_symbol_on_card_width_px = svg_intrinsic_width * calculated_zoom
-            scaled_symbol_on_card_height_px = svg_intrinsic_height * calculated_zoom
-                        
-            scaled_symbol_width_rel = scaled_symbol_on_card_width_px / card_total_width
-            scaled_symbol_height_rel = scaled_symbol_on_card_height_px / card_total_height
-            calculated_set_symbol_x_relative = target_align_x_right_rel - scaled_symbol_width_rel
-            scaled_symbol_half_height_rel = scaled_symbol_height_rel / 2.0
-            calculated_set_symbol_y_relative = target_align_y_center_rel - scaled_symbol_half_height_rel
-            return {
-                "setSymbolX": calculated_set_symbol_x_relative,
-                "setSymbolY": calculated_set_symbol_y_relative,
-                "setSymbolZoom": calculated_zoom,
-                "_status": "success_calculated"
-            }
-
-        except requests.exceptions.HTTPError as http_err:
-            logger.error(f"HTTP error fetching set symbol SVG for auto-fit from {set_symbol_url}: {http_err}")
-            return {"_status": "fetch_error"}
-        except requests.RequestException as req_err: # Catches other network errors (timeout, DNS, etc.)
-            logger.error(f"Network request error fetching set symbol SVG for auto-fit from {set_symbol_url}: {req_err}")
-            return {"_status": "fetch_error"}
-        except etree.XMLSyntaxError as xml_err: # Catch specific XML parsing errors from _get_svg_dimensions
-             logger.error(f"Error parsing SVG content for {set_symbol_url}: {xml_err}. Auto-fit will use default positioning values.")
-             return {"_status": "processing_error"} # SVG fetched, but unusable
-        except Exception as e:
-            # Catch-all for other unexpected errors during the process
-            logger.error(f"Unexpected error during set symbol auto-fit calculation for {set_symbol_url}: {e}", exc_info=True)
-            return {"_status": "processing_error"} # Treat as a processing error; fetch might have occurred.
+            scaled_width_rel = (svg_dims["width"] * calculated_zoom) / card_total_width
+            scaled_height_rel = (svg_dims["height"] * calculated_zoom) / card_total_height
+            return { "setSymbolX": target_align_x_right_rel - scaled_width_rel, 
+                     "setSymbolY": target_align_y_center_rel - (scaled_height_rel / 2.0), 
+                     "setSymbolZoom": calculated_zoom, "_status": "success_calculated" }
+        except requests.RequestException as e: logger.error(f"Symbol SVG request error for {set_symbol_url}: {e}"); return {"_status": "fetch_error"}
+        except Exception as e: logger.error(f"Symbol auto-fit error for {set_symbol_url}: {e}", exc_info=True); return {"_status": "processing_error"}
 
     def _get_svg_dimensions(self, svg_content_bytes: bytes) -> Optional[Dict[str, float]]:
         if not svg_content_bytes: return None
         try:
-            parser = etree.XMLParser(resolve_entities=False, no_network=True)
+            parser = etree.XMLParser(resolve_entities=False, no_network=True, recover=True) # Added recover=True
             svg_root = etree.fromstring(svg_content_bytes, parser=parser)
-            if not svg_root.tag.endswith('svg'): return None
-            viewbox_str = svg_root.get("viewBox"); width_str = svg_root.get("width"); height_str = svg_root.get("height")
-            intrinsic_width, intrinsic_height = None, None
-            if viewbox_str:
-                try:
-                    parts = [float(p) for p in re.split(r'[,\s]+', viewbox_str.strip())]
-                    if len(parts) == 4: intrinsic_width, intrinsic_height = parts[2], parts[3]
-                except ValueError: pass
-            if intrinsic_width is None and width_str and not width_str.endswith('%'):
-                try: intrinsic_width = float(re.sub(r'[^\d\.]', '', width_str))
-                except ValueError: pass
-            if intrinsic_height is None and height_str and not height_str.endswith('%'):
-                try: intrinsic_height = float(re.sub(r'[^\d\.]', '', height_str))
-                except ValueError: pass
-            if intrinsic_width and intrinsic_height and intrinsic_width > 0 and intrinsic_height > 0:
-                return {"width": intrinsic_width, "height": intrinsic_height}
-            return None
-        except Exception: return None
+            if svg_root is None or not svg_root.tag.endswith('svg'): # Check if parsing failed
+                 logger.warning("Failed to parse SVG or root is not <svg> tag.")
+                 return None
+            viewbox_str, width_str, height_str = svg_root.get("viewBox"), svg_root.get("width"), svg_root.get("height")
+            w, h = None, None
+            if viewbox_str: 
+                try: parts = [float(p) for p in re.split(r'[,\s]+', viewbox_str.strip())]; w, h = (parts[2], parts[3]) if len(parts) == 4 else (None, None)
+                except ValueError: logger.warning(f"Could not parse viewBox: '{viewbox_str}'")
+            if w is None and width_str and not width_str.endswith('%'): 
+                try: w = float(re.sub(r'[^\d\.\-e]', '', width_str)) # Allow scientific notation and negatives
+                except ValueError: logger.warning(f"Could not parse width: '{width_str}'")
+            if h is None and height_str and not height_str.endswith('%'): 
+                try: h = float(re.sub(r'[^\d\.\-e]', '', height_str))
+                except ValueError: logger.warning(f"Could not parse height: '{height_str}'")
+            return {"width": w, "height": h} if w and h and w > 0 and h > 0 else None
+        except etree.XMLSyntaxError as xml_err: logger.error(f"XMLSyntaxError parsing SVG: {xml_err}"); return None
+        except Exception as e: logger.error(f"General error parsing SVG dimensions: {e}", exc_info=True); return None
+
+
+    def _calculate_auto_fit_art_params_from_data(self, image_bytes: bytes, art_url_for_logging: str) -> Optional[Dict[str, float]]:
+        if not image_bytes: logger.warning(f"No image bytes for art auto-fit: {art_url_for_logging}"); return None
+        try:
+            img = Image.open(io.BytesIO(image_bytes)); w, h = img.width, img.height; img.close()
+            if w == 0 or h == 0: logger.warning(f"Zero dimensions for art: {art_url_for_logging}"); return None
+            
+            cfg = self.frame_config; card_w, card_h = cfg.get("width"), cfg.get("height")
+            art_bounds = cfg.get("art_bounds")
+            if not (card_w and card_h and art_bounds and isinstance(art_bounds, dict) and all(k in art_bounds for k in ('x', 'y', 'width', 'height'))):
+                logger.warning(f"Incomplete frame/art_bounds config for art auto-fit: {art_url_for_logging}"); return None
+            
+            box_rel_x, box_rel_y, box_rel_w, box_rel_h = art_bounds["x"], art_bounds["y"], art_bounds["width"], art_bounds["height"]
+            if box_rel_w <= 0 or box_rel_h <= 0: logger.warning(f"Invalid art_bounds dimensions for auto-fit: {art_url_for_logging}"); return None
+            
+            target_abs_w, target_abs_h = box_rel_w * card_w, box_rel_h * card_h
+            scale_x, scale_y = target_abs_w / w, target_abs_h / h
+            zoom = max(scale_x, scale_y)
+            if zoom <= 1e-6: logger.warning(f"Calculated art zoom too small for auto-fit: {art_url_for_logging}"); return None
+            
+            art_x = box_rel_x + (target_abs_w - w * zoom) / 2 / card_w
+            art_y = box_rel_y + (target_abs_h - h * zoom) / 2 / card_h
+            return {"artX": art_x, "artY": art_y, "artZoom": zoom}
+        except Exception as e: logger.error(f"Art auto-fit from data error for {art_url_for_logging}: {e}", exc_info=True); return None
 
     def _calculate_auto_fit_art_params(self, art_url: str) -> Optional[Dict[str, float]]:
         if not art_url: return None
         try:
             response = requests.get(art_url, timeout=10); response.raise_for_status()
-            if self.api_delay_seconds > 0: time.sleep(self.api_delay_seconds) 
-            img = Image.open(io.BytesIO(response.content)); art_natural_width, art_natural_height = img.width, img.height; img.close()
-            if art_natural_width == 0 or art_natural_height == 0: return None
-            card_total_width = self.frame_config.get("width"); card_total_height = self.frame_config.get("height")
-            art_bounds_config = self.frame_config.get("art_bounds")
-            if not (card_total_width and card_total_height and art_bounds_config and isinstance(art_bounds_config, dict) and all(k in art_bounds_config for k in ('x', 'y', 'width', 'height'))): return None
-            if card_total_width <= 0 or card_total_height <= 0: return None
-            art_box_relative_x = art_bounds_config.get("x", 0.0); art_box_relative_y = art_bounds_config.get("y", 0.0)
-            art_box_relative_width = art_bounds_config.get("width", 0.0); art_box_relative_height = art_bounds_config.get("height", 0.0)
-            if art_box_relative_width <= 0 or art_box_relative_height <= 0: return None
-            target_abs_art_box_width = art_box_relative_width * card_total_width
-            target_abs_art_box_height = art_box_relative_height * card_total_height
-            if art_natural_width <= 0 or art_natural_height <= 0: return None
-            scale_x = target_abs_art_box_width / art_natural_width; scale_y = target_abs_art_box_height / art_natural_height
-            calculated_zoom = max(scale_x, scale_y)
-            calculated_art_x = art_box_relative_x + (target_abs_art_box_width - art_natural_width * calculated_zoom) / 2 / card_total_width
-            calculated_art_y = art_box_relative_y + (target_abs_art_box_height - art_natural_height * calculated_zoom) / 2 / card_total_height
-            return {"artX": calculated_art_x, "artY": calculated_art_y, "artZoom": calculated_zoom}
-        except Exception as e: logger.error(f"Error in _calculate_auto_fit_art_params for {art_url}: {e}", exc_info=True); return None
+            if self.api_delay_seconds > 0 and (not hasattr(response, 'from_cache') or response.from_cache is False if hasattr(response, 'from_cache') else True):
+                time.sleep(self.api_delay_seconds)
+            return self._calculate_auto_fit_art_params_from_data(response.content, art_url)
+        except requests.RequestException as e: logger.error(f"Art auto-fit URL fetch error for {art_url}: {e}"); return None
+        except Image.UnidentifiedImageError as img_err: logger.error(f"Cannot identify image for art auto-fit from {art_url}: {img_err}"); return None
+        except Exception as e: logger.error(f"Unexpected error in art auto-fit for {art_url}: {e}", exc_info=True); return None
+
+
+    def _get_image_mime_type_and_extension(self, image_bytes: bytes) -> tuple[Optional[str], Optional[str]]:
+        try:
+            img_format = None
+            try: img = Image.open(io.BytesIO(image_bytes)); img_format = img.format; img.close()
+            except Exception: logger.debug("Pillow could not determine image format, trying manual sniff.")
+            
+            if img_format == "JPEG": return "image/jpeg", ".jpg"
+            if img_format == "PNG": return "image/png", ".png"
+            if img_format == "GIF": return "image/gif", ".gif"
+            if img_format == "WEBP": return "image/webp", ".webp"
+            
+            # Fallback manual sniffing
+            if image_bytes.startswith(b'\xff\xd8\xff'): return "image/jpeg", ".jpg"
+            if image_bytes.startswith(b'\x89PNG\r\n\x1a\n'): return "image/png", ".png"
+            if image_bytes.startswith(b'GIF87a') or image_bytes.startswith(b'GIF89a'): return "image/gif", ".gif"
+            if image_bytes.startswith(b'RIFF') and len(image_bytes) > 12 and image_bytes[8:12] == b'WEBP': return "image/webp", ".webp"
+            
+            logger.warning(f"Unsupported image format for MIME type or extension detection (first 10 bytes: {image_bytes[:10].hex()}).")
+            return "application/octet-stream", "" # Generic fallback
+        except Exception as e: logger.error(f"Could not determine image type: {e}", exc_info=True); return "application/octet-stream", ""
+
+    def _upscale_image_with_ilaria(self, 
+                                   hosted_original_image_url: str, 
+                                   original_base_filename: str, 
+                                   original_image_mime_type: Optional[str]
+                                  ) -> Optional[bytes]:
+        if not self.ilaria_upscaler_base_url:
+            logger.error("Ilaria Upscaler base URL not configured. Skipping upscale."); return None
+        if not hosted_original_image_url:
+            logger.warning(f"Upscaling for '{original_base_filename}' skipped: No hosted original image URL provided."); return None
+
+        ilaria_api_realesrgan_url = f"{self.ilaria_upscaler_base_url.rstrip('/')}/api/realesrgan"
+        
+        image_descriptor = {
+            "path": hosted_original_image_url, "url": hosted_original_image_url,
+            "orig_name": original_base_filename, "size": None, 
+            "mime_type": original_image_mime_type if original_image_mime_type else "application/octet-stream",
+            "is_stream": False
+        }
+        payload_data = [image_descriptor, self.upscaler_model_name, self.upscaler_denoise_strength,
+                        self.upscaler_face_enhance, float(self.upscaler_outscale_factor)]
+        payload = {"data": payload_data}
+        logger.info(f"Upscaling '{original_base_filename}' via Ilaria: {ilaria_api_realesrgan_url} using URL: {hosted_original_image_url}")
+
+        try:
+            response = requests.post(ilaria_api_realesrgan_url, json=payload, timeout=180); response.raise_for_status()
+            api_response_data = response.json()
+            if 'data' in api_response_data and isinstance(api_response_data['data'], list) and api_response_data['data']:
+                output_desc = api_response_data['data'][0]
+                if isinstance(output_desc, dict) and output_desc.get('url'):
+                    temp_upscaled_url = output_desc['url']
+                    logger.info(f"Upscaled image (temp) for '{original_base_filename}' at: {temp_upscaled_url}. Fetching...")
+                    upscaled_response = requests.get(temp_upscaled_url, timeout=60); upscaled_response.raise_for_status()
+                    logger.info(f"Fetched upscaled image for '{original_base_filename}'.")
+                    return upscaled_response.content
+            logger.error(f"Ilaria API unexpected output descriptor for '{original_base_filename}': {str(api_response_data.get('data', ['N/A'])[0])[:200]}"); return None
+        except requests.exceptions.HTTPError as e:
+            content = e.response.text[:500] if e.response else "N/A"
+            logger.error(f"Ilaria API HTTP error for '{original_base_filename}': {e}. Response: {content}"); return None
+        except Exception as e: logger.error(f"Ilaria API general error for '{original_base_filename}': {e}", exc_info=True); return None
+
+    def _host_image_to_nginx_webdav(self, image_bytes: bytes, 
+                                   sub_directory: str, base_filename: str) -> Optional[str]:
+        if not self.image_server_base_url:
+            logger.error(f"Image Server URL not set. Cannot host '{base_filename}'."); return None
+        if not image_bytes: logger.warning(f"No bytes to host for '{base_filename}'."); return None
+
+        full_path_segment = (f"{self.image_server_path_prefix.strip('/')}/"
+                             f"{sub_directory.strip('/')}/"
+                             f"{base_filename.lstrip('/')}")
+        if not full_path_segment.startswith('/'): full_path_segment = '/' + full_path_segment
+        
+        upload_url = f"{self.image_server_base_url.rstrip('/')}{full_path_segment}"
+        logger.info(f"Hosting '{base_filename}' to Nginx WebDAV: {upload_url}")
+        mime_type, _ = self._get_image_mime_type_and_extension(image_bytes)
+        headers = {'Content-Type': mime_type if mime_type else 'application/octet-stream'}
+
+        try:
+            response = requests.put(upload_url, data=image_bytes, headers=headers, timeout=60)
+            response.raise_for_status()
+            if 200 <= response.status_code < 300:
+                logger.info(f"Hosted '{base_filename}' successfully. URL: {upload_url}")
+                return upload_url
+            logger.error(f"Nginx hosting error for '{base_filename}': Status {response.status_code}"); return None
+        except requests.exceptions.HTTPError as e:
+            content = e.response.text[:500] if e.response else "N/A"
+            logger.error(f"Nginx hosting HTTP error for '{base_filename}': {e}. Response: {content}"); return None
+        except Exception as e: logger.error(f"Nginx hosting network error for '{base_filename}': {e}", exc_info=True); return None
     
     def _format_path(self, path_format_str: Optional[str], **kwargs) -> str:
         if not path_format_str:
-            # Log less verbosely if it's just a missing optional path like pt_path_format
-            if not ('pt_path_format' in str(kwargs.get('caller_description', '')) and kwargs.get('path_type_optional', False)):
-                 logger.error(f"Path format string is None or empty. Args: {kwargs}")
+            is_optional_pt = 'pt_path_format' in str(kwargs.get('caller_description', '')) and kwargs.get('path_type_optional', False)
+            if not is_optional_pt: logger.error(f"Path format string is None/empty. Args: {kwargs}")
             return "/img/error_path.png" 
-        
         valid_args = {k: v for k, v in kwargs.items() if f"{{{k}}}" in path_format_str}
-        
-        try:
-            return path_format_str.format(**valid_args)
-        except KeyError as e:
-            logger.error(f"KeyError formatting path '{path_format_str}' with effectively used args {valid_args} (original args: {kwargs}): {e}")
-            return "/img/error_path_key_error.png"
-        except Exception as e_gen:
-            logger.error(f"Generic error formatting path '{path_format_str}' with args {valid_args}: {e_gen}")
-            return "/img/error_path_generic.png"
+        try: return path_format_str.format(**valid_args)
+        except Exception as e: logger.error(f"Path format error '{path_format_str}' with {valid_args}: {e}"); return "/img/error_path_generic.png"
 
     def build_frame_path(self, color_code: str) -> str:
-        return self._format_path(
-            self.frame_config.get("frame_path_format"),
-            caller_description="build_frame_path",
-            frame=self.frame_type,
-            frame_set=self.frame_set,
-            color_code=color_code.lower()
-        )
+        return self._format_path(self.frame_config.get("frame_path_format"), frame=self.frame_type, frame_set=self.frame_set, color_code=color_code.lower())
     
     def build_mask_path(self, mask_name: str) -> str:
-        if self.frame_type == "8th": 
-            ext = ".svg" if mask_name == "border" else ".png"
-            return f"/img/frames/8th/{mask_name}{ext}"
-        
-        return self._format_path(
-            self.frame_config.get("mask_path_format"),
-            caller_description="build_mask_path",
-            frame=self.frame_type,
-            frame_set=self.frame_set,
-            mask_name=mask_name
-        )
+        if self.frame_type == "8th": return f"/img/frames/8th/{mask_name}{'.svg' if mask_name == 'border' else '.png'}"
+        return self._format_path(self.frame_config.get("mask_path_format"), frame=self.frame_type, frame_set=self.frame_set, mask_name=mask_name)
     
     def build_land_frame_path(self, color_code: str) -> str:
-        if self.frame_type == "8th":
-            return f"/img/frames/8th/{color_code.lower()}l.png" 
-
-        if self.frame_config.get("uses_frame_set", False): 
-            base_dir = f"/img/frames/{self.frame_type}/{self.frame_set}/"
-            land_filename_format = self.frame_config.get("land_color_format", "{color_code}l.png")
-            return base_dir + land_filename_format.format(color_code=color_code.lower())
-
-        if "land_frame_path_format" in self.frame_config: 
-            return self._format_path(
-                self.frame_config.get("land_frame_path_format"),
-                caller_description="build_land_frame_path specific",
-                color_code=color_code.lower() 
-            )
-        
-        main_frame_path_format = self.frame_config.get("frame_path_format")
-        if main_frame_path_format:
-            base_dir = main_frame_path_format.rsplit('/', 1)[0] + "/"
-            land_filename_format = self.frame_config.get("land_color_format", "{color_code}l.png")
-            return base_dir + land_filename_format.format(color_code=color_code.lower())
-
-        logger.error(f"Could not determine land frame path for {self.frame_type} with color {color_code}")
-        return "/img/error_land_frame.png"
+        if self.frame_type == "8th": return f"/img/frames/8th/{color_code.lower()}l.png" 
+        cfg = self.frame_config
+        if cfg.get("uses_frame_set", False): 
+            return f"/img/frames/{self.frame_type}/{self.frame_set}/" + cfg.get("land_color_format", "{color_code}l.png").format(color_code=color_code.lower())
+        if "land_frame_path_format" in cfg: return self._format_path(cfg["land_frame_path_format"], color_code=color_code.lower())
+        main_fmt = cfg.get("frame_path_format")
+        if main_fmt: return main_fmt.rsplit('/', 1)[0] + "/" + cfg.get("land_color_format", "{color_code}l.png").format(color_code=color_code.lower())
+        logger.error(f"Cannot determine land frame path for {self.frame_type} color {color_code}"); return "/img/error_land_frame.png"
 
     def build_pt_frame_path(self, color_code: str) -> Optional[str]:
-        return self._format_path(
-            self.frame_config.get("pt_path_format"),
-            caller_description="build_pt_frame_path", path_type_optional=True,
-            frame=self.frame_type,
-            color_code=color_code, 
-            color_code_upper=color_code.upper(),
-            color_code_lower=color_code.lower()
-        )
+        return self._format_path(self.frame_config.get("pt_path_format"), path_type_optional=True, frame=self.frame_type, color_code=color_code, color_code_upper=color_code.upper(), color_code_lower=color_code.lower())
 
     def build_m15_frames(self, color_info: Union[Dict, List], card_data: Dict) -> List[Dict]:
         generated_frames = []
@@ -303,7 +343,6 @@ class CardBuilder:
                 crown_bounds = self.frame_config.get("legend_crown_bounds")
                 cover_bounds = self.frame_config.get("legend_crown_cover_bounds") 
                 if crown_path_format and crown_bounds and cover_bounds:
-                    # M15 regular crowns use {color_code_upper} based on assets like m15CrownW.png
                     if secondary_crown_color_code:
                         generated_frames.append({"name": f"{secondary_crown_color_name} Legend Crown", "src": self._format_path(crown_path_format, color_code_upper=secondary_crown_color_code.upper()), "masks": [{"src": "/img/frames/maskRightHalf.png", "name": "Right Half"}], "bounds": crown_bounds})
                     generated_frames.append({"name": f"{primary_crown_color_name} Legend Crown", "src": self._format_path(crown_path_format, color_code_upper=primary_crown_color_code.upper()), "masks": [], "bounds": crown_bounds})
@@ -438,42 +477,15 @@ class CardBuilder:
             frames = [{"name": f"{color_name} Frame", "src": self.build_frame_path(color_code), "masks": [{"src": self.build_mask_path(mask_name), "name": mask_name.capitalize() if mask_name != "trim" else "Textbox Pinline"}]} for mask_name in ["pinline", "rules"] + common_masks]
         return frames
 
-# --- In card_builder.py ---
-# Ensure these are imported at the top of card_builder.py if not already:
-# from typing import Dict, List, Optional, Union
-# from .color_mapping import COLOR_CODE_MAP # Assuming color_mapping is in the same package or adjust import
-# import logging
-# logger = logging.getLogger(__name__)
-
-    # --- METHOD with fixes for non-basic lands ---
-# --- In card_builder.py ---
-# Ensure these are imported at the top of card_builder.py if not already:
-# from typing import Dict, List, Optional, Union
-# from .color_mapping import COLOR_CODE_MAP # Assuming color_mapping is in the same package or adjust import
-# import logging
-# logger = logging.getLogger(__name__)
-
-    # --- METHOD with fixes for non-basic lands ---
-# --- In card_builder.py ---
-# Ensure these are imported at the top of card_builder.py if not already:
-# from typing import Dict, List, Optional, Union
-# from .color_mapping import COLOR_CODE_MAP # Assuming color_mapping is in the same package or adjust import
-# import logging
-# logger = logging.getLogger(__name__)
-
     def build_m15ub_frames(self, color_info: Union[Dict, List], card_data: Dict) -> List[Dict]:
-        """Build frames for M15 Unbordered (m15ub) cards."""
         generated_frames = []
         card_name_for_logging = card_data.get('name', 'Unknown Card')
         type_line = card_data.get('type_line', '')
         is_land_card = 'Land' in type_line
 
-        # --- 1. Power/Toughness Box (if applicable) ---
         if 'power' in card_data and 'toughness' in card_data:
             pt_code_to_use = None 
             pt_name_prefix = "Unknown"
-            
-            # logger.debug(f"PT Check for '{card_name_for_logging}': Type='{type_line}', ColorInfo='{color_info}'") # Debug
             if 'Vehicle' in type_line:
                 pt_code_to_use = COLOR_CODE_MAP.get('V', {}).get('code')
                 pt_name_prefix = COLOR_CODE_MAP.get('V', {}).get('name', "Vehicle")
@@ -496,7 +508,6 @@ class CardBuilder:
                 if pt_path and pt_bounds_config and "/error_path" not in pt_path: 
                     generated_frames.append({"name": f"{pt_name_prefix} Power/Toughness", "src": pt_path, "masks": [], "bounds": pt_bounds_config})
         
-        # --- 2. Legendary Crown (if applicable) ---
         is_legendary = 'Legendary' in type_line
         if self.legendary_crowns and is_legendary:
             primary_crown_color_code, secondary_crown_color_code = None, None
@@ -506,10 +517,10 @@ class CardBuilder:
                 if len(components) >= 1: primary_crown_color_code, primary_crown_color_name = components[0]['code'], components[0]['name']
                 if len(components) >= 2: secondary_crown_color_code, secondary_crown_color_name = components[1]['code'], components[1]['name']
             elif isinstance(color_info, dict) and color_info.get('code'): primary_crown_color_code, primary_crown_color_name = color_info['code'], color_info['name']
-            elif is_land_card:
-                if len(color_info) > 1 and 'code' in color_info[1]: primary_crown_color_code, primary_crown_color_name = color_info[1]['code'], color_info[1]['name']
-                if len(color_info) > 2 and 'code' in color_info[2]: secondary_crown_color_code, secondary_crown_color_name = color_info[2]['code'], color_info[2]['name']
-                elif not primary_crown_color_code and len(color_info) == 1 and 'code' in color_info[0]: primary_crown_color_code, primary_crown_color_name = color_info[0]['code'], color_info[0]['name']
+            elif is_land_card and isinstance(color_info, list):
+                if len(color_info) > 1 and isinstance(color_info[1], dict) and 'code' in color_info[1]: primary_crown_color_code, primary_crown_color_name = color_info[1]['code'], color_info[1]['name']
+                if len(color_info) > 2 and isinstance(color_info[2], dict) and 'code' in color_info[2]: secondary_crown_color_code, secondary_crown_color_name = color_info[2]['code'], color_info[2]['name']
+                elif not primary_crown_color_code and len(color_info) == 1 and isinstance(color_info[0], dict) and 'code' in color_info[0]: primary_crown_color_code, primary_crown_color_name = color_info[0]['code'], color_info[0]['name']
             
             if primary_crown_color_code:
                 crown_src_path_format = self.frame_config.get("legend_crown_path_format_m15ub")
@@ -525,7 +536,6 @@ class CardBuilder:
                         generated_frames.append({"name": f"{primary_crown_color_name} Legend Crown", "src": formatted_crown_path_primary, "masks": [], "bounds": crown_bounds})
                         generated_frames.append({"name": "Legend Crown Border Cover", "src": crown_cover_src, "masks": [], "bounds": crown_cover_bounds})
         
-        # --- 3. Main Card Frame Layers ---
         main_frame_layers = []
         base_frame_path_fmt = self.frame_config.get("frame_path_format") 
         land_frame_path_fmt = self.frame_config.get("land_frame_path_format") 
@@ -549,30 +559,17 @@ class CardBuilder:
         base_codes = { k: COLOR_CODE_MAP.get(k, {}).get('code') for k in ['M', 'L', 'A', 'V', 'C'] }
         base_names = { k: COLOR_CODE_MAP.get(k, {}).get('name') for k in ['M', 'L', 'A', 'V', 'C'] }
 
-        # --- START DETAILED LOGGING FOR LANDS ---
-        if card_name_for_logging in ["Strip Mine", "Tolaria"]: # Log only for these specific cards
-            logger.info(f"--- Debugging {card_name_for_logging} in m15ub Main Frames ---")
-            logger.info(f"is_land_card: {is_land_card}")
-            logger.info(f"color_info: {color_info}")
-
-        if is_land_card:
+        if is_land_card and isinstance(color_info, list):
             ttfb_code, ttfb_name = base_codes.get('L'), base_names.get('L', "Land")
-            if len(color_info) > 1 and 'code' in color_info[1]: 
+            if len(color_info) > 1 and isinstance(color_info[1], dict) and 'code' in color_info[1]: 
                 primary_color_code_main, primary_color_name_main = color_info[1]['code'], color_info[1]['name']
-                if len(color_info) > 2 and 'code' in color_info[2]: 
+                if len(color_info) > 2 and isinstance(color_info[2], dict) and 'code' in color_info[2]: 
                     secondary_color_code_main, secondary_color_name_main = color_info[2]['code'], color_info[2]['name']
-            elif len(color_info) == 1 and 'code' in color_info[0]: 
+            elif len(color_info) == 1 and isinstance(color_info[0], dict) and 'code' in color_info[0]: 
                 primary_color_code_main, primary_color_name_main = color_info[0]['code'], color_info[0]['name']
-            else: # Problematic case for lands if color_info isn't as expected
+            else: 
                 logger.warning(f"Unexpected color_info structure for land '{card_name_for_logging}': {color_info}. Defaulting primary_color_code_main to 'l'.")
                 primary_color_code_main, primary_color_name_main = base_codes.get('L'), base_names.get('L', "Land")
-
-
-            if card_name_for_logging in ["Strip Mine", "Tolaria"]:
-                logger.info(f"Derived for Land: primary_color_code_main='{primary_color_code_main}', ttfb_code='{ttfb_code}'")
-        
-        # ... (rest of non-land color code determination) ...
-        # This part should be the same as before
         elif isinstance(color_info, dict):
             if color_info.get('is_gold'):
                 components = color_info.get('component_colors', [])
@@ -594,16 +591,12 @@ class CardBuilder:
         
         if not primary_color_code_main : 
             logger.error(f"M15UB MainFrame: Primary color code MAIN missing for '{card_name_for_logging}'. color_info: {color_info}"); 
-            generated_frames.extend(main_frame_layers); return generated_frames # Added color_info to log
+            generated_frames.extend(main_frame_layers); return generated_frames
         if not ttfb_code: 
-            logger.warning(f"M15UB MainFrame: TTFB code missing for '{card_name_for_logging}', falling back to primary. color_info: {color_info}"); # Added color_info
+            logger.warning(f"M15UB MainFrame: TTFB code missing for '{card_name_for_logging}', falling back to primary. color_info: {color_info}");
             ttfb_code, ttfb_name = primary_color_code_main, primary_color_name_main 
 
-        # Path determination logic (from previous correct version)
-        src_pinline_rules = ""
-        src_type_title = ""
-        src_frame_border = ""
-
+        src_pinline_rules = ""; src_type_title = ""; src_frame_border = ""
         if is_land_card:
             if primary_color_code_main != base_codes.get('L'): 
                 src_pinline_rules = self._format_path(land_frame_path_fmt, color_code=primary_color_code_main) 
@@ -617,10 +610,6 @@ class CardBuilder:
             src_type_title = self._format_path(base_frame_path_fmt, color_code=ttfb_code)
             src_frame_border = src_type_title 
 
-        if card_name_for_logging in ["Strip Mine", "Tolaria"]:
-            logger.info(f"Paths for {card_name_for_logging}: src_pinline_rules='{src_pinline_rules}', src_type_title='{src_type_title}', src_frame_border='{src_frame_border}'")
-        # --- END DETAILED LOGGING FOR LANDS ---
-
         if "/error_path" in src_pinline_rules or "/error_path" in src_type_title or "/error_path" in src_frame_border :
             logger.error(f"M15UB MainFrame: Error in generating critical frame paths for '{card_name_for_logging}'.")
             generated_frames.extend(main_frame_layers); return generated_frames
@@ -629,7 +618,6 @@ class CardBuilder:
 
         if secondary_color_code_main: 
             src_secondary_pinline_rules = self._format_path(land_frame_path_fmt if is_land_card else base_frame_path_fmt, color_code=secondary_color_code_main)
-            
             if "/error_path" not in src_secondary_pinline_rules:
                 main_frame_layers.extend([
                     {"name": f"{secondary_color_name_main} Frame", "src": src_secondary_pinline_rules, "masks": [{"src": pinline_mask_src, "name": "Pinline"}, {"src": "/img/frames/maskRightHalf.png", "name": "Right Half"}]},
@@ -641,7 +629,7 @@ class CardBuilder:
                     {"name": f"{ttfb_name} Frame", "src": src_frame_border, "masks": [{"src": frame_mask_src, "name": "Frame"}]},
                     {"name": f"{ttfb_name} Frame", "src": src_frame_border, "masks": [{"src": border_mask_src, "name": "Border"}]}])
             else: 
-                logger.error(f"M15UB MainFrame: Error generating secondary path for '{card_name_for_logging}'. Falling back to primary layers.")
+                logger.warning(f"M15UB MainFrame: Error generating secondary path for '{card_name_for_logging}'. Falling back to primary layers.")
                 main_frame_layers.extend([
                     {"name": f"{primary_color_name_main} Frame", "src": src_pinline_rules, "masks": [{"src": pinline_mask_src, "name": "Pinline"}]},
                     {"name": f"{type_title_name_prefix} Frame", "src": src_type_title, "masks": [{"src": type_mask_src, "name": "Type"}]},
@@ -660,17 +648,13 @@ class CardBuilder:
         
         generated_frames.extend(main_frame_layers)
         return generated_frames
-    
-    def build_card_data(self, card_name: str, card_data: Dict, color_info, 
-                        is_basic_land_fetch_mode: bool = False, # ADDED for basic land feature
-                        basic_land_type_override: Optional[str] = None) -> Dict: # ADDED for basic land feature
-    
-        logger.debug(f"build_card_data for '{card_name}', frame_type '{self.frame_type}'. Keys in card_data: {list(card_data.keys())}")
-        if 'power' in card_data and 'toughness' in card_data:
-            logger.debug(f"P/T found in card_data for '{card_name}': P={card_data.get('power')}, T={card_data.get('toughness')}")
-        else:
-            logger.debug(f"P/T NOT found in card_data for '{card_name}'. 'power' present: {'power' in card_data}, 'toughness' present: {'toughness' in card_data}")
 
+    def build_card_data(self, card_name: str, card_data: Dict, color_info, 
+                        is_basic_land_fetch_mode: bool = False,
+                        basic_land_type_override: Optional[str] = None) -> Dict:
+    
+        logger.debug(f"build_card_data for '{card_name}', frame_type '{self.frame_type}'. Upscale Art: {self.upscale_art}")
+        
         frames_for_card_obj = []
         if self.frame_type == "8th": frames_for_card_obj = self.build_eighth_edition_frames(color_info, card_data)
         elif self.frame_type == "m15": frames_for_card_obj = self.build_m15_frames(color_info, card_data)
@@ -679,145 +663,182 @@ class CardBuilder:
         
         mana_symbols = []
         if isinstance(color_info, list) or self.frame_config.get("version_string", "") == "m15EighthSnow": 
-            mana_symbols = ["/js/frames/manaSymbolsFAB.js", "/js/frames/manaSymbolsBreakingNews.js"] # Corrected case
+            mana_symbols = ["/js/frames/manaSymbolsFAB.js", "/js/frames/manaSymbolsBreakingNews.js"]
             if self.frame_type == "seventh": mana_symbols = ["/js/frames/manaSymbolsFuture.js", "/js/frames/manaSymbolsOld.js"]
 
-        # --- START: FLAVOR TEXT & BASIC LAND RULES TEXT MODIFICATION ---
         oracle_text_from_scryfall = card_data.get('oracle_text', '')
         flavor_text_from_scryfall = card_data.get('flavor_text') 
-
-        final_rules_text = oracle_text_from_scryfall # Default to oracle text
+        final_rules_text = oracle_text_from_scryfall
         shows_flavor_bar_for_this_card = self.frame_config.get("shows_flavor_bar", False) 
-
-        if is_basic_land_fetch_mode and basic_land_type_override: # Check for basic land mode FIRST
+        if is_basic_land_fetch_mode and basic_land_type_override:
             produced = card_data.get("produced_mana")
             if produced and isinstance(produced, list) and len(produced) > 0:
-                mana_char = produced[0] 
-                final_rules_text = f"{{fontsize450}}{{center}}{{down90}}{{{mana_char.lower()}}}"
-                # For this specific style of basic land, we typically don't want a flavor bar,
-                # and flavor text itself is ignored in favor of the large mana symbol.
+                mana_char = produced[0]; final_rules_text = f"{{fontsize450}}{{center}}{{down90}}{{{mana_char.lower()}}}"
                 shows_flavor_bar_for_this_card = False 
-                if flavor_text_from_scryfall: 
-                    logger.debug(f"Basic land '{card_name}' has flavor text, but it's being overridden by mana symbol display for this mode.")
-            else:
-                logger.warning(f"Basic land '{card_name}' in fetch mode but 'produced_mana' is missing or invalid: {produced}. Rules text will be empty.")
-                final_rules_text = "" # Fallback to empty if no mana symbol found
-        
-        elif flavor_text_from_scryfall: # This runs ONLY if NOT in basic_land_fetch_mode AND flavor_text exists
+            else: final_rules_text = ""
+        elif flavor_text_from_scryfall:
             cleaned_flavor_text = flavor_text_from_scryfall.replace('*', '')
-            if final_rules_text: # If there's already oracle text
-                final_rules_text += "\n{flavor}" + cleaned_flavor_text
-            else: # If no oracle text, just the flavor text
-                final_rules_text = "{flavor}" + cleaned_flavor_text
-            
-            shows_flavor_bar_for_this_card = True # Ensure flavor bar is shown if flavor text is present
-        # --- END: FLAVOR TEXT & BASIC LAND RULES TEXT MODIFICATION --
-
+            final_rules_text = (final_rules_text + "\n{flavor}" if final_rules_text else "{flavor}") + cleaned_flavor_text
+            shows_flavor_bar_for_this_card = True
+        
+        scryfall_card_name = card_data.get('name', card_name) 
         set_code_from_scryfall = card_data.get('set', DEFAULT_INFO_SET)
-        rarity_from_scryfall = card_data.get('rarity', 'c')
-        rarity_code_for_symbol = RARITY_MAP.get(rarity_from_scryfall, rarity_from_scryfall)
-        set_code_for_symbol_url = self.set_symbol_override.lower() if self.set_symbol_override else set_code_from_scryfall.lower()
+        collector_number_from_scryfall = card_data.get('collector_number', '000')
         artist_name = card_data.get('artist', DEFAULT_INFO_ARTIST)
         
-        art_crop_url = ""
-        if 'image_uris' in card_data and 'art_crop' in card_data['image_uris']: art_crop_url = card_data['image_uris']['art_crop']
+        scryfall_art_crop_url = ""
+        if 'image_uris' in card_data and 'art_crop' in card_data['image_uris']: scryfall_art_crop_url = card_data['image_uris']['art_crop']
         elif 'card_faces' in card_data and card_data['card_faces']:
             for face in card_data['card_faces']:
-                if 'image_uris' in face and 'art_crop' in face['image_uris']: art_crop_url = face['image_uris']['art_crop']; break
+                if 'image_uris' in face and 'art_crop' in face['image_uris']: 
+                    scryfall_art_crop_url = face['image_uris']['art_crop']; break
+        
+        final_art_source_url = scryfall_art_crop_url 
+        hosted_original_art_url = None
+        hosted_upscaled_art_url = None 
 
         art_x = self.frame_config.get("art_x", 0.0); art_y = self.frame_config.get("art_y", 0.0)
         art_zoom = self.frame_config.get("art_zoom", 1.0); art_rotate = self.frame_config.get("art_rotate", "0")
-        if self.auto_fit_art and art_crop_url:
-            auto_fit_params = self._calculate_auto_fit_art_params(art_crop_url) # Corrected: art_crop_url
-            if auto_fit_params: art_x, art_y, art_zoom = auto_fit_params["artX"], auto_fit_params["artY"], auto_fit_params["artZoom"]
+        original_image_content = None
+        original_image_mime_type: Optional[str] = None
+        image_ext = ".jpg" 
+
+        if scryfall_art_crop_url:
+            sanitized_card_name = sanitize_for_filename(scryfall_card_name)
+            set_code_sanitized = sanitize_for_filename(set_code_from_scryfall)
+            collector_number_sanitized = sanitize_for_filename(collector_number_from_scryfall)
+            
+            # Determine initial extension from URL first (robustly)
+            try:
+                url_path_no_query = scryfall_art_crop_url.split('?')[0]
+                base, ext_from_url = os.path.splitext(url_path_no_query)
+                if ext_from_url and ext_from_url.lower() in ['.jpg', '.jpeg', '.png', '.gif', '.webp']:
+                    image_ext = ext_from_url.lower()
+            except Exception:
+                logger.debug(f"Could not reliably parse extension from URL: {scryfall_art_crop_url}")
+
+
+            # Fetch image data if needed for auto-fit or upscale/hosting
+            if self.auto_fit_art or (self.upscale_art and self.image_server_base_url and self.ilaria_upscaler_base_url):
+                try:
+                    logger.debug(f"Fetching art from {scryfall_art_crop_url} for {set_code_sanitized}-{collector_number_sanitized}-{sanitized_card_name}.")
+                    response = requests.get(scryfall_art_crop_url, timeout=10); response.raise_for_status()
+                    if self.api_delay_seconds > 0 and (not hasattr(response, 'from_cache') or response.from_cache is False if hasattr(response, 'from_cache') else True):
+                        time.sleep(self.api_delay_seconds)
+                    original_image_content = response.content
+                    original_image_mime_type, determined_ext = self._get_image_mime_type_and_extension(original_image_content)
+                    if determined_ext: image_ext = determined_ext # Override with more accurate extension from bytes
+                    # If determined_ext is None, image_ext retains its URL-derived or default value
+                    
+                except Exception as e: 
+                    logger.error(f"Failed to fetch art from {scryfall_art_crop_url}: {e}", exc_info=True)
+                    # Keep image_ext as derived from URL or default if fetch fails
+
+            if not image_ext.startswith('.'): image_ext = '.' + image_ext
+            base_art_filename = f"{set_code_sanitized}-{collector_number_sanitized}-{sanitized_card_name}{image_ext}"
+
+            if self.auto_fit_art:
+                auto_fit_params = None
+                if original_image_content: auto_fit_params = self._calculate_auto_fit_art_params_from_data(original_image_content, scryfall_art_crop_url)
+                else: auto_fit_params = self._calculate_auto_fit_art_params(scryfall_art_crop_url)
+                if auto_fit_params: art_x, art_y, art_zoom = auto_fit_params["artX"], auto_fit_params["artY"], auto_fit_params["artZoom"]
+                else: logger.warning(f"Auto-fit failed for {base_art_filename}.")
+
+            if self.upscale_art and original_image_content and self.image_server_base_url and self.ilaria_upscaler_base_url:
+                hosted_original_art_url = self._host_image_to_nginx_webdav(original_image_content, "original", base_art_filename)
+                
+                if hosted_original_art_url:
+                    upscaled_image_bytes = self._upscale_image_with_ilaria(
+                        hosted_original_art_url, base_art_filename, original_image_mime_type
+                    )
+                    if upscaled_image_bytes:
+                        _, upscaled_ext = self._get_image_mime_type_and_extension(upscaled_image_bytes)
+                        if not upscaled_ext: upscaled_ext = image_ext 
+                        if not upscaled_ext.startswith('.'): upscaled_ext = '.' + upscaled_ext
+                        
+                        upscaled_art_filename = f"{set_code_sanitized}-{collector_number_sanitized}-{sanitized_card_name}{upscaled_ext}"
+                        upscaler_model_sanitized = sanitize_for_filename(self.upscaler_model_name)
+                        
+                        hosted_upscaled_art_url = self._host_image_to_nginx_webdav(
+                            upscaled_image_bytes, upscaler_model_sanitized, upscaled_art_filename
+                        )
+                        
+                        if hosted_upscaled_art_url:
+                            final_art_source_url = hosted_upscaled_art_url
+                        else: 
+                            logger.warning(f"Failed to host upscaled image for {base_art_filename}. Using hosted original.")
+                            final_art_source_url = hosted_original_art_url 
+                    else: 
+                        logger.warning(f"Upscaling failed for {base_art_filename}. Using hosted original.")
+                        final_art_source_url = hosted_original_art_url 
+                else: 
+                    logger.warning(f"Failed to host original image {base_art_filename}. Using Scryfall URL.")
+                    final_art_source_url = scryfall_art_crop_url 
+            elif self.upscale_art:
+                 logger.warning(f"Upscaling/hosting skipped for {base_art_filename}: requirements not met (original content or server URLs missing).")
         
         set_symbol_x = self.frame_config.get("set_symbol_x", 0.0); set_symbol_y = self.frame_config.get("set_symbol_y", 0.0); set_symbol_zoom = self.frame_config.get("set_symbol_zoom", 0.1)
-        # scryfall_set_for_symbol = card_data.get('set', 'lea').lower() # Not needed here, actual_set_code_for_url covers it
-        scryfall_rarity_for_symbol = RARITY_MAP.get(card_data.get('rarity', 'c').lower(), card_data.get('rarity', 'c').lower())
+        rarity_from_scryfall = card_data.get('rarity', 'c')
+        rarity_code_for_symbol = RARITY_MAP.get(rarity_from_scryfall, rarity_from_scryfall)
+        set_code_for_symbol_url = self.set_symbol_override.lower() if self.set_symbol_override else set_code_from_scryfall.lower()
         actual_set_code_for_url = set_code_for_symbol_url 
-        set_symbol_source_url = f"{ccProto}://{ccHost}:{ccPort}/img/setSymbols/official/{actual_set_code_for_url}-{scryfall_rarity_for_symbol}.svg"
+        set_symbol_source_url = f"{ccProto}://{ccHost}:{ccPort}/img/setSymbols/official/{actual_set_code_for_url}-{rarity_code_for_symbol}.svg"
         if self.auto_fit_set_symbol and set_symbol_source_url:
-            auto_fit_symbol_params = self._calculate_auto_fit_set_symbol_params(set_symbol_source_url)
-            if auto_fit_symbol_params: set_symbol_x, set_symbol_y, set_symbol_zoom = auto_fit_symbol_params["setSymbolX"], auto_fit_symbol_params["setSymbolY"], auto_fit_symbol_params["setSymbolZoom"]
+            auto_fit_symbol_params_result = self._calculate_auto_fit_set_symbol_params(set_symbol_source_url)
+            if auto_fit_symbol_params_result:
+                status = auto_fit_symbol_params_result.get("_status")
+                if status in ["success_lookup", "success_calculated"]:
+                    set_symbol_x = auto_fit_symbol_params_result["setSymbolX"]; set_symbol_y = auto_fit_symbol_params_result["setSymbolY"]; set_symbol_zoom = auto_fit_symbol_params_result["setSymbolZoom"]
+                elif status == "calculation_issue_default_fallback": logger.warning(f"Auto-fit for set symbol {set_symbol_source_url} resulted in fallback.")
+            else: logger.warning(f"Auto-fit set symbol calculation returned None for {set_symbol_source_url}.")
 
-        # --- P/T Text Construction with Asterisk Replacement for 8th frame ---
-        power_val = card_data.get('power', '')
-        toughness_val = card_data.get('toughness', '')
+        power_val = card_data.get('power', ''); toughness_val = card_data.get('toughness', '')
         pt_text_final = ""
-
-        if 'power' in card_data and 'toughness' in card_data: # Ensure both keys exist, even if values are empty or *
-            # For 8th edition, replace standard asterisk with a Unicode alternative
+        if 'power' in card_data and 'toughness' in card_data:
             if self.frame_type == "8th":
-                # Choose your preferred Unicode asterisk that renders well with matrixbsc
-                replacement_asterisk = "X"
-                # Option 1: Asterisk Operator (U+2217)
-                # replacement_asterisk = "\u2217" 
-                # Option 2: Low Asterisk (U+204E)
-                # replacement_asterisk = "\u204E" 
-                
-                if power_val == "*":
-                    power_val = replacement_asterisk
-                if toughness_val == "*":
-                    toughness_val = replacement_asterisk
-            
+                replacement_asterisk = "X" 
+                if power_val == "*": power_val = replacement_asterisk
+                if toughness_val == "*": toughness_val = replacement_asterisk
             pt_text_final = f"{power_val}/{toughness_val}"
-        # --- End P/T Text Construction ---         
-
-        # card_name passed to this function is the key for the card object.
-        # For basic lands, ScryfallProcessor will pass the unique key (e.g., "Forest-lea-123").
-        # For other cards, it's just the card name.
-        final_card_key_name = card_name 
         
-        # --- NEW: Basic Land Title Override ---
-        # If in basic land fetch mode, the title displayed on the card should be the generic land type.
-        # The 'name' field from Scryfall for basics can be like "Forest (Alpha)".
-        # The card_key (final_card_key_name) already has the generic name for basics.
-        display_title = basic_land_type_override if is_basic_land_fetch_mode and basic_land_type_override else card_data.get('name', card_name)
+        display_title_text = basic_land_type_override if is_basic_land_fetch_mode and basic_land_type_override else scryfall_card_name
 
-        # --- NEW: Determine display title for basic lands ---
-        display_title_text = basic_land_type_override if is_basic_land_fetch_mode and basic_land_type_override else card_data.get('name', card_name)
-        # --- END: Determine display title ---
-
-        card_obj = {"key": card_name, "data": { # REMOVED frame_type from key
-                "width": self.frame_config["width"], "height": self.frame_config["height"],
-                "marginX": self.frame_config.get("margin_x", 0), "marginY": self.frame_config.get("margin_y", 0),
-                "frames": frames_for_card_obj,
-                "artSource": art_crop_url, "artX": art_x, "artY": art_y, "artZoom": art_zoom, "artRotate": art_rotate,
-                "setSymbolSource": set_symbol_source_url, "setSymbolX":set_symbol_x, "setSymbolY": set_symbol_y, "setSymbolZoom": set_symbol_zoom,
-                "watermarkSource": f"{ccProto}://{ccHost}:{ccPort}/{self.frame_config['watermark_source']}",
-                "watermarkX": self.frame_config["watermark_x"], "watermarkY": self.frame_config["watermark_y"], "watermarkZoom": self.frame_config["watermark_zoom"], 
-                "watermarkLeft": self.frame_config["watermark_left"], "watermarkRight": self.frame_config["watermark_right"], "watermarkOpacity": self.frame_config["watermark_opacity"],
-                "version": self.frame_config.get("version_string", self.frame_type), "showsFlavorBar": self.frame_config.get("shows_flavor_bar", False), "manaSymbols": mana_symbols,
-                "infoYear": DEFAULT_INFO_YEAR, "margins": self.frame_config.get("margins", False),
-                "bottomInfoTranslate": self.frame_config.get("bottomInfoTranslate", {"x": 0, "y": 0}), "bottomInfoRotate": self.frame_config.get("bottomInfoRotate", 0),
-                "bottomInfoZoom": self.frame_config.get("bottomInfoZoom", 1), "bottomInfoColor": self.frame_config.get("bottomInfoColor", "white"),
-                "onload": self.frame_config.get("onload", None), "hideBottomInfoBorder": self.frame_config.get("hideBottomInfoBorder", False),
-                "bottomInfo": self.frame_config.get("bottom_info", {}), "artBounds": self.frame_config.get("art_bounds", {}),
-                "setSymbolBounds": self.frame_config.get("set_symbol_bounds", {}), "watermarkBounds": self.frame_config.get("watermark_bounds", {}),
-                                "text": { # MODIFIED TEXT POPULATION TO FIX ERROR
-                    "mana": {
-                        **self.frame_config.get("text", {}).get("mana", {}),
-                        "text": card_data.get('mana_cost', '')
-                    },
-                    "title": {
-                        **self.frame_config.get("text", {}).get("title", {}),
-                        "text": display_title_text # Use the determined display_title_text
-                    },
-                    "type": {
-                        **self.frame_config.get("text", {}).get("type", {}),
-                        "text": card_data.get('type_line', 'Instant')
-                    },
-                    "rules": { 
-                        **self.frame_config.get("text", {}).get("rules", {}),
-                        "text": final_rules_text 
-                    },
-                    "pt": { # MODIFIED TO USE pt_text_final
-                        **self.frame_config.get("text", {}).get("pt", {}),
-                        "text": pt_text_final 
-                    }
-                },
-                "infoNumber": DEFAULT_INFO_NUMBER, "infoRarity": rarity_code_for_symbol.upper() if rarity_code_for_symbol else DEFAULT_INFO_RARITY, 
-                "infoSet": set_code_from_scryfall.upper(), "infoLanguage": DEFAULT_INFO_LANGUAGE, "infoArtist": artist_name, "infoNote": DEFAULT_INFO_NOTE,
-                "noCorners": self.frame_config.get("noCorners", True)}}
-        if self.frame_type == "8th": card_obj["data"].update({"serialNumber": "", "serialTotal": "", "serialX": "", "serialY": "", "serialScale": ""})
-        return card_obj
+        card_obj_data = {
+            "width": self.frame_config["width"], "height": self.frame_config["height"],
+            "marginX": self.frame_config.get("margin_x", 0), "marginY": self.frame_config.get("margin_y", 0),
+            "frames": frames_for_card_obj, 
+            "artSource": final_art_source_url, 
+            "artX": art_x, "artY": art_y, "artZoom": art_zoom, "artRotate": art_rotate,
+            "artSourceOriginalScryfall": scryfall_art_crop_url, 
+            **({"artSourceHostedOriginal": hosted_original_art_url} if hosted_original_art_url else {}),
+            **({"artSourceHostedUpscaled": hosted_upscaled_art_url} if hosted_upscaled_art_url and hosted_upscaled_art_url != final_art_source_url else {}),
+            "setSymbolSource": set_symbol_source_url, "setSymbolX":set_symbol_x, "setSymbolY": set_symbol_y, "setSymbolZoom": set_symbol_zoom,
+            "watermarkSource": f"{ccProto}://{ccHost}:{ccPort}/{self.frame_config['watermark_source']}",
+            "watermarkX": self.frame_config["watermark_x"], "watermarkY": self.frame_config["watermark_y"], "watermarkZoom": self.frame_config["watermark_zoom"], 
+            "watermarkLeft": self.frame_config["watermark_left"], "watermarkRight": self.frame_config["watermark_right"], "watermarkOpacity": self.frame_config["watermark_opacity"],
+            "version": self.frame_config.get("version_string", self.frame_type), 
+            "showsFlavorBar": shows_flavor_bar_for_this_card, "manaSymbols": mana_symbols,
+            "infoYear": DEFAULT_INFO_YEAR, "margins": self.frame_config.get("margins", False),
+            "bottomInfoTranslate": self.frame_config.get("bottomInfoTranslate", {"x": 0, "y": 0}), "bottomInfoRotate": self.frame_config.get("bottomInfoRotate", 0),
+            "bottomInfoZoom": self.frame_config.get("bottomInfoZoom", 1), "bottomInfoColor": self.frame_config.get("bottomInfoColor", "white"),
+            "onload": self.frame_config.get("onload", None), "hideBottomInfoBorder": self.frame_config.get("hideBottomInfoBorder", False),
+            "bottomInfo": self.frame_config.get("bottom_info", {}), "artBounds": self.frame_config.get("art_bounds", {}),
+            "setSymbolBounds": self.frame_config.get("set_symbol_bounds", {}), "watermarkBounds": self.frame_config.get("watermark_bounds", {}),
+            "text": {
+                "mana": {**self.frame_config.get("text", {}).get("mana", {}), "text": card_data.get('mana_cost', '')},
+                "title": {**self.frame_config.get("text", {}).get("title", {}), "text": display_title_text},
+                "type": {**self.frame_config.get("text", {}).get("type", {}), "text": card_data.get('type_line', 'Instant')},
+                "rules": { **self.frame_config.get("text", {}).get("rules", {}), "text": final_rules_text },
+                "pt": {**self.frame_config.get("text", {}).get("pt", {}), "text": pt_text_final }
+            },
+            "infoNumber": collector_number_from_scryfall, 
+            "infoRarity": rarity_code_for_symbol.upper() if rarity_code_for_symbol else DEFAULT_INFO_RARITY, 
+            "infoSet": set_code_from_scryfall.upper(), 
+            "infoLanguage": DEFAULT_INFO_LANGUAGE, 
+            "infoArtist": artist_name, 
+            "infoNote": DEFAULT_INFO_NOTE,
+            "noCorners": self.frame_config.get("noCorners", True)
+        }
+        if self.frame_type == "8th": card_obj_data.update({"serialNumber": "", "serialTotal": "", "serialX": "", "serialY": "", "serialScale": ""})
+        
+        return {"key": card_name, "data": card_obj_data}
