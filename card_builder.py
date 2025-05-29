@@ -679,15 +679,23 @@ class CardBuilder:
         # --- 2. Upscaling and Final Art Source Determination ---
         if self.upscale_art and art_crop_url and self.image_server_base_url and self.ilaria_upscaler_base_url:
             upscaler_model_sanitized = sanitize_for_filename(self.upscaler_model_name)
+
+            # NEW: Construct directory name including both model and outscale factor
+            # self.upscaler_outscale_factor is ensured to be >= 1 by the constructor
+            upscaled_directory_name = f"{upscaler_model_sanitized}-{self.upscaler_outscale_factor}x"
+            logger.info(f"Upscaling: Using Nginx subdirectory '{upscaled_directory_name}' for upscaled images.")
+
             # RealESRGAN typically outputs PNG, but we verify after generation
             upscaled_image_check_ext = ".png" 
             base_art_filename_upscaled_check = f"{sanitized_card_name}_{set_code_sanitized}_{collector_number_sanitized}{upscaled_image_check_ext}"
-            expected_upscaled_url_on_nginx = self._construct_nginx_public_url(upscaler_model_sanitized, base_art_filename_upscaled_check)
+
+            # MODIFIED: Use the new upscaled_directory_name
+            expected_upscaled_url_on_nginx = self._construct_nginx_public_url(upscaled_directory_name, base_art_filename_upscaled_check)
             
             used_existing_upscaled = False
             # A. Check if upscaled version already exists on Nginx
             if self._check_if_file_exists_on_server(expected_upscaled_url_on_nginx):
-                logger.info(f"Upscaling: Found existing upscaled art '{base_art_filename_upscaled_check}' on Nginx.")
+                logger.info(f"Upscaling: Found existing upscaled art '{base_art_filename_upscaled_check}' in Nginx dir '{upscaled_directory_name}'.")
                 hosted_upscaled_art_url = expected_upscaled_url_on_nginx
                 final_art_source_url = hosted_upscaled_art_url
                 used_existing_upscaled = True
@@ -759,8 +767,9 @@ class CardBuilder:
                             if not actual_upscaled_ext.startswith('.'): actual_upscaled_ext = '.' + actual_upscaled_ext
                             upscaled_art_filename_to_save = f"{sanitized_card_name}_{set_code_sanitized}_{collector_number_sanitized}{actual_upscaled_ext}"
                             
-                            logger.info(f"Upscaling: Hosting upscaled art '{upscaled_art_filename_to_save}' to Nginx.")
-                            temp_hosted_upscaled_url = self._host_image_to_nginx_webdav(upscaled_image_bytes, upscaler_model_sanitized, upscaled_art_filename_to_save)
+                            # MODIFIED: Use the new upscaled_directory_name for log and hosting
+                            logger.info(f"Upscaling: Hosting upscaled art '{upscaled_art_filename_to_save}' to Nginx in dir '{upscaled_directory_name}'.")
+                            temp_hosted_upscaled_url = self._host_image_to_nginx_webdav(upscaled_image_bytes, upscaled_directory_name, upscaled_art_filename_to_save)
                             if temp_hosted_upscaled_url:
                                 hosted_upscaled_art_url = temp_hosted_upscaled_url
                                 final_art_source_url = hosted_upscaled_art_url
