@@ -3,12 +3,12 @@
 Module for building card data structure from Scryfall data
 """
 import logging
-from typing import Dict, List, Optional, Union, Tuple
+from typing import Dict, List, Optional, Union, Tuple 
 import io 
 import re 
 import json
 import time
-import os
+import os 
 import base64
 import unicodedata 
 
@@ -26,21 +26,13 @@ from color_mapping import COLOR_CODE_MAP, RARITY_MAP
 logger = logging.getLogger(__name__)
 
 def sanitize_for_filename(value: str) -> str:
-    """
-    Sanitizes a string to be safe for filenames and URL paths.
-    Converts to lowercase, removes apostrophes, replaces spaces and 
-    other special characters with hyphens.
-    """
-    if not isinstance(value, str):
-        value = str(value)
-    
-    value = value.replace("'", "") # Remove apostrophes
+    if not isinstance(value, str): value = str(value)
+    value = value.replace("'", "")
     value = unicodedata.normalize('NFKD', value).encode('ascii', 'ignore').decode('ascii')
-    value = re.sub(r'[\s/:<>:"\\|?*&]+', '-', value) # Added '&'
-    value = re.sub(r'-+', '-', value) # Collapse multiple hyphens
-    value = value.strip('-') # Remove leading/trailing hyphens
+    value = re.sub(r'[\s/:<>:"\\|?*&]+', '-', value)
+    value = re.sub(r'-+', '-', value)
+    value = value.strip('-')
     return value.lower()
-
 
 class CardBuilder:
     """Class for building card data from Scryfall data"""
@@ -49,16 +41,15 @@ class CardBuilder:
                  legendary_crowns: bool = False, auto_fit_art: bool = False, 
                  set_symbol_override: Optional[str] = None, auto_fit_set_symbol: bool = False, 
                  api_delay_seconds: float = 0.1,
+                 # Upscaling & Hosting Params
                  upscale_art: bool = False,
-                 
                  ilaria_upscaler_base_url: Optional[str] = None, 
                  upscaler_model_name: str = "RealESRGAN_x2plus", 
                  upscaler_outscale_factor: int = 2, 
                  upscaler_denoise_strength: float = 0.5, 
                  upscaler_face_enhance: bool = False,
-
                  image_server_base_url: Optional[str] = None, 
-                 image_server_path_prefix: str = "/webdav_images" 
+                 image_server_path_prefix: str = "/webdav_images"
                 ):
         self.frame_type = frame_type
         self.frame_config = frame_config
@@ -68,30 +59,26 @@ class CardBuilder:
         self.set_symbol_override = set_symbol_override
         self.auto_fit_set_symbol = auto_fit_set_symbol
         self.api_delay_seconds = api_delay_seconds
-        self.upscale_art = upscale_art
         
+        self.upscale_art = upscale_art
         self.ilaria_upscaler_base_url = ilaria_upscaler_base_url
         self.upscaler_model_name = upscaler_model_name
-        self.upscaler_outscale_factor = upscaler_outscale_factor
+        self.upscaler_outscale_factor = upscaler_outscale_factor if upscaler_outscale_factor > 0 else 1
         self.upscaler_denoise_strength = upscaler_denoise_strength
         self.upscaler_face_enhance = upscaler_face_enhance
-
         self.image_server_base_url = image_server_base_url
         self.image_server_path_prefix = "/" + image_server_path_prefix.strip("/") + "/" if image_server_path_prefix else "/"
-        
+
         if self.upscale_art and (not self.ilaria_upscaler_base_url or not self.image_server_base_url):
-            logger.warning("Upscaling is enabled, but Ilaria Upscaler URL or Image Server URL is not configured. Upscaling/hosting will be skipped if a URL is missing.")
+            logger.warning("Upscaling is enabled, but Ilaria or Image Server URL is not configured. Upscaling/hosting may be skipped.")
 
         self.symbol_placement_lookup = {}
         if self.auto_fit_set_symbol: 
             try:
-                with open("symbol_placements.json", "r") as f:
-                    self.symbol_placement_lookup = json.load(f)
+                with open("symbol_placements.json", "r") as f: self.symbol_placement_lookup = json.load(f)
                 logger.info(f"Loaded {len(self.symbol_placement_lookup)} entries from symbol_placements.json")
-            except FileNotFoundError:
-                logger.warning("symbol_placements.json not found. Auto-fit will use fallback calculations for all symbols.")
-            except json.JSONDecodeError as e:
-                logger.error(f"Error decoding symbol_placements.json: {e}. Auto-fit will use fallback calculations.")
+            except FileNotFoundError: logger.warning("symbol_placements.json not found.")
+            except json.JSONDecodeError as e: logger.error(f"Error decoding symbol_placements.json: {e}.")
 
     def _extract_set_code_from_url(self, url: str) -> Optional[str]:
         if not url: return None
@@ -111,25 +98,19 @@ class CardBuilder:
         try:
             response = requests.get(set_symbol_url, timeout=10); response.raise_for_status()
             svg_bytes = response.content
-            if self.api_delay_seconds > 0 and (not hasattr(response, 'from_cache') or response.from_cache is False if hasattr(response, 'from_cache') else True):
-                time.sleep(self.api_delay_seconds)
+            if self.api_delay_seconds > 0 and (not hasattr(response, 'from_cache') or response.from_cache is False if hasattr(response, 'from_cache') else True): time.sleep(self.api_delay_seconds)
             svg_dims = self._get_svg_dimensions(svg_bytes)
-            if not svg_dims or svg_dims["width"] <= 0 or svg_dims["height"] <= 0:
-                logger.warning(f"Could not determine valid SVG dimensions for {set_symbol_url}. Using defaults.")
-                return {"_status": "calculation_issue_default_fallback"}
-            card_total_width = self.frame_config.get("width"); card_total_height = self.frame_config.get("height")
-            symbol_bounds_config = self.frame_config.get("set_symbol_bounds")
-            target_align_x_right_rel = self.frame_config.get("set_symbol_align_x_right"); target_align_y_center_rel = self.frame_config.get("set_symbol_align_y_center")
-            if not (card_total_width and card_total_height and symbol_bounds_config and isinstance(symbol_bounds_config, dict) and all(k in symbol_bounds_config for k in ('x', 'y', 'width', 'height')) and target_align_x_right_rel is not None and target_align_y_center_rel is not None):
-                logger.warning(f"Frame config incomplete for set symbol auto-fit with {set_symbol_url}. Using defaults.")
-                return {"_status": "calculation_issue_default_fallback"}
-            scale_x_factor = (symbol_bounds_config["width"] * card_total_width) / svg_dims["width"]
-            scale_y_factor = (symbol_bounds_config["height"] * card_total_height) / svg_dims["height"]
-            calculated_zoom = min(scale_x_factor, scale_y_factor)
-            if calculated_zoom <= 1e-6: logger.warning(f"Calculated zoom for set symbol too small for {set_symbol_url}. Using defaults."); return {"_status": "calculation_issue_default_fallback"}
-            scaled_width_rel = (svg_dims["width"] * calculated_zoom) / card_total_width
-            scaled_height_rel = (svg_dims["height"] * calculated_zoom) / card_total_height
-            return { "setSymbolX": target_align_x_right_rel - scaled_width_rel, "setSymbolY": target_align_y_center_rel - (scaled_height_rel / 2.0), "setSymbolZoom": calculated_zoom, "_status": "success_calculated" }
+            if not svg_dims or svg_dims["width"] <= 0 or svg_dims["height"] <= 0: logger.warning(f"Invalid SVG dimensions for {set_symbol_url}."); return {"_status": "calculation_issue_default_fallback"}
+            card_w, card_h = self.frame_config.get("width"), self.frame_config.get("height")
+            bounds_cfg = self.frame_config.get("set_symbol_bounds")
+            align_x, align_y = self.frame_config.get("set_symbol_align_x_right"), self.frame_config.get("set_symbol_align_y_center")
+            if not (card_w and card_h and bounds_cfg and isinstance(bounds_cfg, dict) and all(k in bounds_cfg for k in ('x', 'y', 'width', 'height')) and align_x is not None and align_y is not None):
+                logger.warning(f"Frame config incomplete for set symbol auto-fit: {set_symbol_url}."); return {"_status": "calculation_issue_default_fallback"}
+            scale_x = (bounds_cfg["width"] * card_w) / svg_dims["width"]; scale_y = (bounds_cfg["height"] * card_h) / svg_dims["height"]
+            zoom = min(scale_x, scale_y)
+            if zoom <= 1e-6: logger.warning(f"Set symbol zoom too small for {set_symbol_url}."); return {"_status": "calculation_issue_default_fallback"}
+            scaled_w_rel = (svg_dims["width"] * zoom) / card_w; scaled_h_rel = (svg_dims["height"] * zoom) / card_h
+            return { "setSymbolX": align_x - scaled_w_rel, "setSymbolY": align_y - (scaled_h_rel / 2.0), "setSymbolZoom": zoom, "_status": "success_calculated" }
         except requests.RequestException as e: logger.error(f"Symbol SVG request error for {set_symbol_url}: {e}"); return {"_status": "fetch_error"}
         except Exception as e: logger.error(f"Symbol auto-fit error for {set_symbol_url}: {e}", exc_info=True); return {"_status": "processing_error"}
 
@@ -138,12 +119,12 @@ class CardBuilder:
         try:
             parser = etree.XMLParser(resolve_entities=False, no_network=True, recover=True)
             svg_root = etree.fromstring(svg_content_bytes, parser=parser)
-            if svg_root is None or not svg_root.tag.endswith('svg'): logger.warning("Failed to parse SVG or root is not <svg> tag."); return None
-            viewbox_str, width_str, height_str = svg_root.get("viewBox"), svg_root.get("width"), svg_root.get("height")
+            if svg_root is None or not svg_root.tag.endswith('svg'): logger.warning("Failed to parse SVG."); return None
+            viewbox, width_str, height_str = svg_root.get("viewBox"), svg_root.get("width"), svg_root.get("height")
             w, h = None, None
-            if viewbox_str: 
-                try: parts = [float(p) for p in re.split(r'[,\s]+', viewbox_str.strip())]; w, h = (parts[2], parts[3]) if len(parts) == 4 else (None, None)
-                except ValueError: logger.warning(f"Could not parse viewBox: '{viewbox_str}'")
+            if viewbox: 
+                try: p = [float(x) for x in re.split(r'[,\s]+', viewbox.strip())]; w, h = (p[2], p[3]) if len(p) == 4 else (None, None)
+                except ValueError: logger.warning(f"Could not parse viewBox: '{viewbox}'")
             if w is None and width_str and not width_str.endswith('%'): 
                 try: w = float(re.sub(r'[^\d\.\-e]', '', width_str))
                 except ValueError: logger.warning(f"Could not parse width: '{width_str}'")
@@ -151,166 +132,175 @@ class CardBuilder:
                 try: h = float(re.sub(r'[^\d\.\-e]', '', height_str))
                 except ValueError: logger.warning(f"Could not parse height: '{height_str}'")
             return {"width": w, "height": h} if w and h and w > 0 and h > 0 else None
-        except etree.XMLSyntaxError as xml_err: logger.error(f"XMLSyntaxError parsing SVG: {xml_err}"); return None
-        except Exception as e: logger.error(f"General error parsing SVG dimensions: {e}", exc_info=True); return None
+        except Exception as e: logger.error(f"Error parsing SVG dimensions: {e}", exc_info=True); return None
 
-    def _calculate_auto_fit_art_params_from_data(self, image_bytes: bytes, art_url_for_logging: str) -> Optional[Dict[str, float]]:
-        if not image_bytes: logger.warning(f"No image bytes for art auto-fit: {art_url_for_logging}"); return None
+    def _calculate_auto_fit_art_params_from_data(self, image_bytes: bytes, log_ref: str) -> Optional[Dict[str, float]]:
+        if not image_bytes: logger.warning(f"No image bytes for art auto-fit: {log_ref}"); return None
         try:
             img = Image.open(io.BytesIO(image_bytes)); w, h = img.width, img.height; img.close()
-            if w == 0 or h == 0: logger.warning(f"Zero dimensions for art: {art_url_for_logging}"); return None
+            if w == 0 or h == 0: logger.warning(f"Zero dimensions for art: {log_ref}"); return None
             cfg = self.frame_config; card_w, card_h = cfg.get("width"), cfg.get("height")
-            art_bounds = cfg.get("art_bounds")
-            if not (card_w and card_h and art_bounds and isinstance(art_bounds, dict) and all(k in art_bounds for k in ('x', 'y', 'width', 'height'))):
-                logger.warning(f"Incomplete frame/art_bounds config for art auto-fit: {art_url_for_logging}"); return None
-            box_rel_x, box_rel_y, box_rel_w, box_rel_h = art_bounds["x"], art_bounds["y"], art_bounds["width"], art_bounds["height"]
-            if box_rel_w <= 0 or box_rel_h <= 0: logger.warning(f"Invalid art_bounds dimensions for auto-fit: {art_url_for_logging}"); return None
-            target_abs_w, target_abs_h = box_rel_w * card_w, box_rel_h * card_h
-            scale_x, scale_y = target_abs_w / w, target_abs_h / h
-            zoom = max(scale_x, scale_y)
-            if zoom <= 1e-6: logger.warning(f"Calculated art zoom too small for auto-fit: {art_url_for_logging}"); return None
-            art_x = box_rel_x + (target_abs_w - w * zoom) / 2 / card_w
-            art_y = box_rel_y + (target_abs_h - h * zoom) / 2 / card_h
-            return {"artX": art_x, "artY": art_y, "artZoom": zoom}
-        except Exception as e: logger.error(f"Art auto-fit from data error for {art_url_for_logging}: {e}", exc_info=True); return None
+            b = cfg.get("art_bounds")
+            if not (card_w and card_h and b and isinstance(b, dict) and all(k in b for k in ('x', 'y', 'width', 'height'))):
+                logger.warning(f"Incomplete config for art auto-fit: {log_ref}"); return None
+            if b["width"] <= 0 or b["height"] <= 0: logger.warning(f"Invalid art_bounds for auto-fit: {log_ref}"); return None
+            abs_w, abs_h = b["width"] * card_w, b["height"] * card_h
+            zoom = max(abs_w / w, abs_h / h)
+            if zoom <= 1e-6: logger.warning(f"Art zoom too small for auto-fit: {log_ref}"); return None
+            return {"artX": b["x"] + (abs_w - w * zoom) / 2 / card_w, "artY": b["y"] + (abs_h - h * zoom) / 2 / card_h, "artZoom": zoom}
+        except Exception as e: logger.error(f"Art auto-fit from data error for {log_ref}: {e}", exc_info=True); return None
 
-    def _calculate_auto_fit_art_params(self, art_url: str) -> Optional[Dict[str, float]]:
+    def _calculate_auto_fit_art_params(self, art_url: str) -> Optional[Dict[str, float]]: # From baseline
         if not art_url: return None
         try:
+            logger.debug(f"Auto-fit: Fetching Scryfall art from {art_url} for dimension calculation.")
             response = requests.get(art_url, timeout=10); response.raise_for_status()
             if self.api_delay_seconds > 0 and (not hasattr(response, 'from_cache') or response.from_cache is False if hasattr(response, 'from_cache') else True):
                 time.sleep(self.api_delay_seconds)
+            # This is where baseline _calculate_auto_fit_art_params used to have all its logic
+            # Now it calls the _from_data helper
             return self._calculate_auto_fit_art_params_from_data(response.content, art_url)
-        except requests.RequestException as e: logger.error(f"Art auto-fit URL fetch error for {art_url}: {e}"); return None
-        except Image.UnidentifiedImageError as img_err: logger.error(f"Cannot identify image for art auto-fit from {art_url}: {img_err}"); return None
-        except Exception as e: logger.error(f"Unexpected error in art auto-fit for {art_url}: {e}", exc_info=True); return None
+        except Exception as e: logger.error(f"Error in _calculate_auto_fit_art_params for {art_url}: {e}", exc_info=True); return None
 
+    def _fetch_image_bytes(self, url: str, purpose: str = "generic") -> Optional[bytes]: # General helper
+        if not url: return None
+        try:
+            logger.debug(f"Fetching image for {purpose} from: {url}")
+            response = requests.get(url, timeout=10); response.raise_for_status()
+            if "scryfall.com" in url.lower() and self.api_delay_seconds > 0 and \
+               (not hasattr(response, 'from_cache') or response.from_cache is False if hasattr(response, 'from_cache') else True):
+                time.sleep(self.api_delay_seconds)
+            return response.content
+        except Exception as e: logger.error(f"Failed to fetch image for {purpose} from {url}: {e}", exc_info=True); return None
+            
     def _get_image_mime_type_and_extension(self, image_bytes: bytes) -> tuple[Optional[str], Optional[str]]:
         try:
-            img_format = None
-            try: img = Image.open(io.BytesIO(image_bytes)); img_format = img.format; img.close()
-            except Exception: logger.debug("Pillow could not determine image format, trying manual sniff.")
-            if img_format == "JPEG": return "image/jpeg", ".jpg"
-            if img_format == "PNG": return "image/png", ".png"
-            if img_format == "GIF": return "image/gif", ".gif"
-            if img_format == "WEBP": return "image/webp", ".webp"
+            fmt = None; 
+            try: img = Image.open(io.BytesIO(image_bytes)); fmt = img.format; img.close()
+            except Exception: pass
+            if fmt == "JPEG": return "image/jpeg", ".jpg"
+            if fmt == "PNG": return "image/png", ".png"
+            if fmt == "GIF": return "image/gif", ".gif"
+            if fmt == "WEBP": return "image/webp", ".webp"
             if image_bytes.startswith(b'\xff\xd8\xff'): return "image/jpeg", ".jpg"
             if image_bytes.startswith(b'\x89PNG\r\n\x1a\n'): return "image/png", ".png"
             if image_bytes.startswith(b'GIF87a') or image_bytes.startswith(b'GIF89a'): return "image/gif", ".gif"
             if image_bytes.startswith(b'RIFF') and len(image_bytes) > 12 and image_bytes[8:12] == b'WEBP': return "image/webp", ".webp"
-            logger.warning(f"Unsupported image format for MIME type or extension detection (first 10 bytes: {image_bytes[:10].hex()}).")
             return "application/octet-stream", "" 
-        except Exception as e: logger.error(f"Could not determine image type: {e}", exc_info=True); return "application/octet-stream", ""
+        except Exception: return "application/octet-stream", ""
 
-    def _upscale_image_with_ilaria(self, 
-                                   hosted_original_image_url: str, 
-                                   original_base_filename: str, 
-                                   original_image_mime_type: Optional[str]
-                                  ) -> Optional[bytes]:
-        if not self.ilaria_upscaler_base_url: logger.error("Ilaria Upscaler base URL not configured. Skipping upscale."); return None
-        if not hosted_original_image_url: logger.warning(f"Upscaling for '{original_base_filename}' skipped: No hosted original image URL."); return None
-        ilaria_api_realesrgan_url = f"{self.ilaria_upscaler_base_url.rstrip('/')}/api/realesrgan"
-        image_descriptor = { "path": hosted_original_image_url, "url": hosted_original_image_url, "orig_name": original_base_filename, "size": None, "mime_type": original_image_mime_type if original_image_mime_type else "application/octet-stream", "is_stream": False }
-        payload_data = [image_descriptor, self.upscaler_model_name, self.upscaler_denoise_strength, self.upscaler_face_enhance, float(self.upscaler_outscale_factor)]
-        payload = {"data": payload_data}
-        logger.info(f"Upscaling '{original_base_filename}' via Ilaria: {ilaria_api_realesrgan_url} using URL: {hosted_original_image_url}")
+    def _upscale_image_with_ilaria(self, hosted_original_url: str, filename: str, mime: Optional[str]) -> Optional[bytes]:
+        if not self.ilaria_upscaler_base_url: logger.error("Ilaria URL not set."); return None
+        if not hosted_original_url: logger.warning(f"No hosted original URL for '{filename}'."); return None
+        url = f"{self.ilaria_upscaler_base_url.rstrip('/')}/api/realesrgan"
+        desc = {"path":hosted_original_url,"url":hosted_original_url,"orig_name":filename,"size":None,"mime_type":mime if mime else "app/octet-stream","is_stream":False}
+        payload = {"data": [desc, self.upscaler_model_name, self.upscaler_denoise_strength, self.upscaler_face_enhance, float(self.upscaler_outscale_factor)]}
+        logger.info(f"Upscaling '{filename}' via Ilaria: {url} using URL: {hosted_original_url}")
         try:
-            response = requests.post(ilaria_api_realesrgan_url, json=payload, timeout=180); response.raise_for_status()
-            api_response_data = response.json()
-            if 'data' in api_response_data and isinstance(api_response_data['data'], list) and api_response_data['data']:
-                output_desc = api_response_data['data'][0]
-                if isinstance(output_desc, dict) and output_desc.get('url'):
-                    temp_upscaled_url = output_desc['url']
-                    logger.info(f"Upscaled image (temp) for '{original_base_filename}' at: {temp_upscaled_url}. Fetching...")
-                    upscaled_response = requests.get(temp_upscaled_url, timeout=60); upscaled_response.raise_for_status()
-                    logger.info(f"Fetched upscaled image for '{original_base_filename}'.")
-                    return upscaled_response.content
-            logger.error(f"Ilaria API unexpected output descriptor for '{original_base_filename}': {str(api_response_data.get('data', ['N/A'])[0])[:200]}"); return None
-        except requests.exceptions.HTTPError as e:
-            content = e.response.text[:500] if e.response else "N/A"; logger.error(f"Ilaria API HTTP error for '{original_base_filename}': {e}. Response: {content}"); return None
-        except Exception as e: logger.error(f"Ilaria API general error for '{original_base_filename}': {e}", exc_info=True); return None
+            r = requests.post(url, json=payload, timeout=180); r.raise_for_status(); api_data = r.json()
+            if 'data' in api_data and isinstance(api_data['data'],list) and api_data['data'] and isinstance(api_data['data'][0],dict) and api_data['data'][0].get('url'):
+                temp_url = api_data['data'][0]['url']
+                logger.info(f"Upscaled (temp) for '{filename}' at: {temp_url}. Fetching...")
+                r_up = requests.get(temp_url, timeout=60); r_up.raise_for_status()
+                logger.info(f"Fetched upscaled for '{filename}'."); return r_up.content
+            logger.error(f"Ilaria unexpected output for '{filename}': {str(api_data.get('data',['N/A'])[0])[:200]}"); return None
+        except Exception as e: logger.error(f"Ilaria API error for '{filename}': {e}", exc_info=True); return None
 
     def _check_if_file_exists_on_server(self, public_url: str) -> bool:
         if not public_url: return False
         try:
-            response = requests.head(public_url, timeout=15, allow_redirects=True) 
-            if response.status_code == 200:
-                logger.info(f"File confirmed to exist at {public_url}")
-                return True
-            elif response.status_code == 404:
-                logger.info(f"File does not exist at {public_url}")
-                return False
-            else:
-                logger.warning(f"Unexpected status {response.status_code} checking for file at {public_url}. Assuming not verifiably existent.")
-                return False 
-        except requests.exceptions.Timeout:
-            logger.warning(f"Timeout (15s) checking for file at {public_url}. Assuming not verifiably existent.")
-            return False
-        except requests.exceptions.ConnectionError:
-            logger.warning(f"Connection error checking for file at {public_url}. Server might be down. Assuming not verifiably existent.")
-            return False 
-        except Exception as e:
-            logger.warning(f"Error checking file existence at {public_url}: {e}. Assuming not verifiably existent.")
-            return False
+            r = requests.head(public_url, timeout=15, allow_redirects=True) 
+            if r.status_code == 200: logger.info(f"Exists: {public_url}"); return True
+            if r.status_code == 404: logger.info(f"Not found: {public_url}"); return False
+            logger.warning(f"Status {r.status_code} checking {public_url}. Assuming not existent."); return False 
+        except Exception as e: logger.warning(f"Error checking {public_url}: {e}. Assuming not existent."); return False
 
-    def _construct_nginx_public_url(self, sub_directory: str, base_filename: str) -> Optional[str]:
+    def _construct_nginx_public_url(self, sub_dir: str, filename: str) -> Optional[str]:
         if not self.image_server_base_url: return None
-        full_path_segment = (f"{self.image_server_path_prefix.strip('/')}/"
-                             f"{sub_directory.strip('/')}/"
-                             f"{base_filename.lstrip('/')}")
-        if not full_path_segment.startswith('/'): full_path_segment = '/' + full_path_segment
-        return f"{self.image_server_base_url.rstrip('/')}{full_path_segment}"
+        path = (f"{self.image_server_path_prefix.strip('/')}/{sub_dir.strip('/')}/{filename.lstrip('/')}")
+        if not path.startswith('/'): path = '/' + path
+        return f"{self.image_server_base_url.rstrip('/')}{path}"
 
-    def _host_image_to_nginx_webdav(self, image_bytes: bytes, 
-                                   sub_directory: str, base_filename: str) -> Optional[str]:
-        public_url = self._construct_nginx_public_url(sub_directory, base_filename)
-        if not public_url: logger.error(f"Image Server URL not set. Cannot host '{base_filename}'."); return None
-        if not image_bytes: logger.warning(f"No bytes to host for '{base_filename}'."); return None
-
-        logger.info(f"Attempting to host '{base_filename}' to Nginx WebDAV: {public_url}")
-        mime_type, _ = self._get_image_mime_type_and_extension(image_bytes)
-        headers = {'Content-Type': mime_type if mime_type else 'application/octet-stream'}
-
+    def _host_image_to_nginx_webdav(self, img_bytes: bytes, sub_dir: str, filename: str) -> Optional[str]:
+        url = self._construct_nginx_public_url(sub_dir, filename)
+        if not url: logger.error(f"Server URL not set. Cannot host '{filename}'."); return None
+        if not img_bytes: logger.warning(f"No bytes for '{filename}'."); return None
+        logger.info(f"Hosting '{filename}' to Nginx: {url}")
+        mime, _ = self._get_image_mime_type_and_extension(img_bytes)
+        headers = {'Content-Type': mime if mime else 'app/octet-stream'}
         try:
-            response = requests.put(public_url, data=image_bytes, headers=headers, timeout=60)
-            response.raise_for_status() 
-            if 200 <= response.status_code < 300:
-                logger.info(f"Hosted '{base_filename}' successfully. URL: {public_url}")
-                return public_url
-            logger.error(f"Nginx hosting error for '{base_filename}': Status {response.status_code} (unexpected success range)."); return None
-        except requests.exceptions.HTTPError as e:
-            content = e.response.text[:500] if e.response else "N/A"
-            logger.error(f"Nginx hosting HTTP error for '{base_filename}': {e}. Response: {content}"); return None
-        except Exception as e: logger.error(f"Nginx hosting network/other error for '{base_filename}': {e}", exc_info=True); return None
+            r = requests.put(url, data=img_bytes, headers=headers, timeout=60); r.raise_for_status()
+            if 200 <= r.status_code < 300: logger.info(f"Hosted '{filename}'. URL: {url}"); return url
+            logger.error(f"Nginx hosting error for '{filename}': Status {r.status_code}."); return None
+        except Exception as e: logger.error(f"Nginx hosting error for '{filename}': {e}", exc_info=True); return None
     
-    def _format_path(self, path_format_str: Optional[str], **kwargs) -> str:
+    def _format_path(self, path_format_str: Optional[str], **kwargs) -> str: # From baseline
         if not path_format_str:
-            is_optional_pt = 'pt_path_format' in str(kwargs.get('caller_description', '')) and kwargs.get('path_type_optional', False)
-            if not is_optional_pt: logger.error(f"Path format string is None/empty. Args: {kwargs}")
+            if not ('pt_path_format' in str(kwargs.get('caller_description', '')) and kwargs.get('path_type_optional', False)):
+                 logger.error(f"Path format string is None or empty. Args: {kwargs}")
             return "/img/error_path.png" 
         valid_args = {k: v for k, v in kwargs.items() if f"{{{k}}}" in path_format_str}
         try: return path_format_str.format(**valid_args)
-        except Exception as e: logger.error(f"Path format error '{path_format_str}' with {valid_args}: {e}"); return "/img/error_path_generic.png"
+        except KeyError as e: logger.error(f"KeyError formatting path '{path_format_str}' with effectively used args {valid_args} (original args: {kwargs}): {e}"); return "/img/error_path_key_error.png"
+        except Exception as e_gen: logger.error(f"Generic error formatting path '{path_format_str}' with args {valid_args}: {e_gen}"); return "/img/error_path_generic.png"
 
+    # --- PASTE YOUR BASELINE FRAME BUILDERS HERE ---
     def build_frame_path(self, color_code: str) -> str:
-        return self._format_path(self.frame_config.get("frame_path_format"), frame=self.frame_type, frame_set=self.frame_set, color_code=color_code.lower())
+        return self._format_path(
+            self.frame_config.get("frame_path_format"),
+            caller_description="build_frame_path",
+            frame=self.frame_type,
+            frame_set=self.frame_set,
+            color_code=color_code.lower()
+        )
     
     def build_mask_path(self, mask_name: str) -> str:
-        if self.frame_type == "8th": return f"/img/frames/8th/{mask_name}{'.svg' if mask_name == 'border' else '.png'}"
-        return self._format_path(self.frame_config.get("mask_path_format"), frame=self.frame_type, frame_set=self.frame_set, mask_name=mask_name)
+        if self.frame_type == "8th": 
+            ext = ".svg" if mask_name == "border" else ".png"
+            return f"/img/frames/8th/{mask_name}{ext}"
+        
+        return self._format_path(
+            self.frame_config.get("mask_path_format"),
+            caller_description="build_mask_path",
+            frame=self.frame_type,
+            frame_set=self.frame_set,
+            mask_name=mask_name
+        )
     
     def build_land_frame_path(self, color_code: str) -> str:
-        if self.frame_type == "8th": return f"/img/frames/8th/{color_code.lower()}l.png" 
-        cfg = self.frame_config
-        if cfg.get("uses_frame_set", False): 
-            return f"/img/frames/{self.frame_type}/{self.frame_set}/" + cfg.get("land_color_format", "{color_code}l.png").format(color_code=color_code.lower())
-        if "land_frame_path_format" in cfg: return self._format_path(cfg["land_frame_path_format"], color_code=color_code.lower())
-        main_fmt = cfg.get("frame_path_format")
-        if main_fmt: return main_fmt.rsplit('/', 1)[0] + "/" + cfg.get("land_color_format", "{color_code}l.png").format(color_code=color_code.lower())
-        logger.error(f"Cannot determine land frame path for {self.frame_type} color {color_code}"); return "/img/error_land_frame.png"
+        if self.frame_type == "8th":
+            return f"/img/frames/8th/{color_code.lower()}l.png" 
+
+        if self.frame_config.get("uses_frame_set", False): 
+            base_dir = f"/img/frames/{self.frame_type}/{self.frame_set}/"
+            land_filename_format = self.frame_config.get("land_color_format", "{color_code}l.png")
+            return base_dir + land_filename_format.format(color_code=color_code.lower())
+
+        if "land_frame_path_format" in self.frame_config: 
+            return self._format_path(
+                self.frame_config.get("land_frame_path_format"),
+                caller_description="build_land_frame_path specific",
+                color_code=color_code.lower() 
+            )
+        
+        main_frame_path_format = self.frame_config.get("frame_path_format")
+        if main_frame_path_format:
+            base_dir = main_frame_path_format.rsplit('/', 1)[0] + "/"
+            land_filename_format = self.frame_config.get("land_color_format", "{color_code}l.png")
+            return base_dir + land_filename_format.format(color_code=color_code.lower())
+
+        logger.error(f"Could not determine land frame path for {self.frame_type} with color {color_code}")
+        return "/img/error_land_frame.png"
 
     def build_pt_frame_path(self, color_code: str) -> Optional[str]:
-        return self._format_path(self.frame_config.get("pt_path_format"), path_type_optional=True, frame=self.frame_type, color_code=color_code, color_code_upper=color_code.upper(), color_code_lower=color_code.lower())
+        return self._format_path(
+            self.frame_config.get("pt_path_format"),
+            caller_description="build_pt_frame_path", path_type_optional=True,
+            frame=self.frame_type,
+            color_code=color_code, 
+            color_code_upper=color_code.upper(),
+            color_code_lower=color_code.lower()
+        )
 
     def build_m15_frames(self, color_info: Union[Dict, List], card_data: Dict) -> List[Dict]:
         generated_frames = []
@@ -325,25 +315,31 @@ class CardBuilder:
                 if len(components) >= 2: secondary_crown_color_code, secondary_crown_color_name = components[1]['code'], components[1]['name']
             elif isinstance(color_info, dict) and color_info.get('code'): 
                 primary_crown_color_code, primary_crown_color_name = color_info['code'], color_info['name']
+            
             if primary_crown_color_code:
                 crown_path_format = self.frame_config.get("legend_crown_path_format") 
                 crown_bounds = self.frame_config.get("legend_crown_bounds")
                 cover_bounds = self.frame_config.get("legend_crown_cover_bounds") 
                 if crown_path_format and crown_bounds and cover_bounds:
-                    if secondary_crown_color_code: generated_frames.append({"name": f"{secondary_crown_color_name} Legend Crown", "src": self._format_path(crown_path_format, color_code_upper=secondary_crown_color_code.upper()), "masks": [{"src": "/img/frames/maskRightHalf.png", "name": "Right Half"}], "bounds": crown_bounds})
+                    if secondary_crown_color_code:
+                        generated_frames.append({"name": f"{secondary_crown_color_name} Legend Crown", "src": self._format_path(crown_path_format, color_code_upper=secondary_crown_color_code.upper()), "masks": [{"src": "/img/frames/maskRightHalf.png", "name": "Right Half"}], "bounds": crown_bounds})
                     generated_frames.append({"name": f"{primary_crown_color_name} Legend Crown", "src": self._format_path(crown_path_format, color_code_upper=primary_crown_color_code.upper()), "masks": [], "bounds": crown_bounds})
                     generated_frames.append({"name": "Legend Crown Border Cover", "src": "/img/black.png", "masks": [], "bounds": cover_bounds})
             elif is_legendary: logger.warning(f"Could not determine color for M15 legendary crown on '{card_name_for_logging}'.")
+
         if 'power' in card_data and 'toughness' in card_data:
             pt_code, pt_name_prefix = None, "Unknown"
             if isinstance(color_info, dict) and color_info.get('is_gold'): pt_code, pt_name_prefix = COLOR_CODE_MAP['M']['code'], COLOR_CODE_MAP['M']['name']
             elif isinstance(color_info, dict) and color_info.get('code'): pt_code, pt_name_prefix = color_info['code'], color_info['name']
             if pt_code:
-                pt_path = self.build_pt_frame_path(pt_code); pt_bounds = self.frame_config.get("pt_bounds")
+                pt_path = self.build_pt_frame_path(pt_code) 
+                pt_bounds = self.frame_config.get("pt_bounds")
                 if pt_path and pt_bounds and "/error_path" not in pt_path: generated_frames.append({"name": f"{pt_name_prefix} Power/Toughness", "src": pt_path, "masks": [], "bounds": pt_bounds})
+        
         main_frame_layers = []; base_frame_path_fmt = self.frame_config.get("frame_path_format"); mask_path_fmt = self.frame_config.get("mask_path_format")
         main_frame_mask_src = self.frame_config.get("frame_mask_name_for_main_frame_layer"); main_border_mask_src = self.frame_config.get("border_mask_name_for_main_frame_layer")
         if not all([base_frame_path_fmt, mask_path_fmt, main_frame_mask_src, main_border_mask_src]): return generated_frames
+
         primary_color_code, primary_color_name = None, "Unknown"; secondary_color_code, secondary_color_name = None, None
         base_multicolor_code = COLOR_CODE_MAP['M']['code']; base_multicolor_name = COLOR_CODE_MAP['M']['name']
         ttfb_code, ttfb_name = None, None 
@@ -361,21 +357,40 @@ class CardBuilder:
                 ttfb_code, ttfb_name = base_multicolor_code, base_multicolor_name
             elif color_info.get('code'): primary_color_code, primary_color_name = color_info['code'], color_info['name']; ttfb_code, ttfb_name = primary_color_code, primary_color_name
         if not primary_color_code or not ttfb_code: return generated_frames
+        
         src_primary = self._format_path(base_frame_path_fmt, color_code=primary_color_code)
         src_secondary = self._format_path(base_frame_path_fmt, color_code=secondary_color_code) if secondary_color_code else None
         src_ttfb = self._format_path(base_frame_path_fmt, color_code=ttfb_code)
-        pinline_mask = self._format_path(mask_path_fmt, mask_name="Pinline"); type_mask = self._format_path(mask_path_fmt, mask_name="Type")
-        title_mask = self._format_path(mask_path_fmt, mask_name="Title"); rules_mask = self._format_path(mask_path_fmt, mask_name="Rules")
+        pinline_mask = self._format_path(mask_path_fmt, mask_name="Pinline")
+        type_mask = self._format_path(mask_path_fmt, mask_name="Type")
+        title_mask = self._format_path(mask_path_fmt, mask_name="Title")
+        rules_mask = self._format_path(mask_path_fmt, mask_name="Rules")
+
         if secondary_color_code and src_secondary and "/error_path" not in src_secondary: 
-            main_frame_layers.extend([ {"name": f"{secondary_color_name} Frame", "src": src_secondary, "masks": [{"src": pinline_mask, "name": "Pinline"}, {"src": "/img/frames/maskRightHalf.png", "name": "Right Half"}]}, {"name": f"{primary_color_name} Frame", "src": src_primary, "masks": [{"src": pinline_mask, "name": "Pinline"}]}, {"name": f"{ttfb_name} Frame", "src": src_ttfb, "masks": [{"src": type_mask, "name": "Type"}]}, {"name": f"{ttfb_name} Frame", "src": src_ttfb, "masks": [{"src": title_mask, "name": "Title"}]}, {"name": f"{secondary_color_name} Frame", "src": src_secondary, "masks": [{"src": rules_mask, "name": "Rules"}, {"src": "/img/frames/maskRightHalf.png", "name": "Right Half"}]}, {"name": f"{primary_color_name} Frame", "src": src_primary, "masks": [{"src": rules_mask, "name": "Rules"}]}, {"name": f"{ttfb_name} Frame", "src": src_ttfb, "masks": [{"src": main_frame_mask_src, "name": "Frame"}]}, {"name": f"{ttfb_name} Frame", "src": src_ttfb, "masks": [{"src": main_border_mask_src, "name": "Border"}]}])
+            main_frame_layers.extend([
+                {"name": f"{secondary_color_name} Frame", "src": src_secondary, "masks": [{"src": pinline_mask, "name": "Pinline"}, {"src": "/img/frames/maskRightHalf.png", "name": "Right Half"}]},
+                {"name": f"{primary_color_name} Frame", "src": src_primary, "masks": [{"src": pinline_mask, "name": "Pinline"}]},
+                {"name": f"{ttfb_name} Frame", "src": src_ttfb, "masks": [{"src": type_mask, "name": "Type"}]},
+                {"name": f"{ttfb_name} Frame", "src": src_ttfb, "masks": [{"src": title_mask, "name": "Title"}]},
+                {"name": f"{secondary_color_name} Frame", "src": src_secondary, "masks": [{"src": rules_mask, "name": "Rules"}, {"src": "/img/frames/maskRightHalf.png", "name": "Right Half"}]},
+                {"name": f"{primary_color_name} Frame", "src": src_primary, "masks": [{"src": rules_mask, "name": "Rules"}]},
+                {"name": f"{ttfb_name} Frame", "src": src_ttfb, "masks": [{"src": main_frame_mask_src, "name": "Frame"}]},
+                {"name": f"{ttfb_name} Frame", "src": src_ttfb, "masks": [{"src": main_border_mask_src, "name": "Border"}]}])
         else: 
-            main_frame_layers.extend([ {"name": f"{primary_color_name} Frame", "src": src_primary, "masks": [{"src": pinline_mask, "name": "Pinline"}]}, {"name": f"{ttfb_name} Frame", "src": src_ttfb, "masks": [{"src": type_mask, "name": "Type"}]}, {"name": f"{ttfb_name} Frame", "src": src_ttfb, "masks": [{"src": title_mask, "name": "Title"}]}, {"name": f"{primary_color_name} Frame", "src": src_primary, "masks": [{"src": rules_mask, "name": "Rules"}]}, {"name": f"{ttfb_name} Frame", "src": src_ttfb, "masks": [{"src": main_frame_mask_src, "name": "Frame"}]}, {"name": f"{ttfb_name} Frame", "src": src_ttfb, "masks": [{"src": main_border_mask_src, "name": "Border"}]}])
+            main_frame_layers.extend([
+                {"name": f"{primary_color_name} Frame", "src": src_primary, "masks": [{"src": pinline_mask, "name": "Pinline"}]},
+                {"name": f"{ttfb_name} Frame", "src": src_ttfb, "masks": [{"src": type_mask, "name": "Type"}]},
+                {"name": f"{ttfb_name} Frame", "src": src_ttfb, "masks": [{"src": title_mask, "name": "Title"}]},
+                {"name": f"{primary_color_name} Frame", "src": src_primary, "masks": [{"src": rules_mask, "name": "Rules"}]},
+                {"name": f"{ttfb_name} Frame", "src": src_ttfb, "masks": [{"src": main_frame_mask_src, "name": "Frame"}]},
+                {"name": f"{ttfb_name} Frame", "src": src_ttfb, "masks": [{"src": main_border_mask_src, "name": "Border"}]}])
         generated_frames.extend(main_frame_layers)
         return generated_frames
 
     def build_eighth_edition_frames(self, color_info: Union[Dict, List], card_data: Dict) -> List[Dict]:
-        generated_frames = []; pt_color_code, pt_name_prefix = None, None
+        generated_frames = []
         if 'power' in card_data and 'toughness' in card_data:
+            pt_color_code, pt_name_prefix = None, None
             if isinstance(color_info, dict):
                 code, name = color_info.get('code'), color_info.get('name')
                 if code == 'a': pt_color_code, pt_name_prefix = 'a', "Artifact"
@@ -383,54 +398,61 @@ class CardBuilder:
                 elif code in ['w', 'u', 'b', 'r', 'g', 'c']: pt_color_code, pt_name_prefix = code, name
             if pt_color_code and pt_name_prefix:
                 pt_path = self.build_pt_frame_path(pt_color_code)
-                if pt_path and "/error_path" not in pt_path: generated_frames.append({"name": f"{pt_name_prefix} P/T", "src": pt_path, "masks": [], "bounds": {"height": 0.0839, "width": 0.2147, "x": 0.7227, "y": 0.8796}})
+                if pt_path and "/error_path" not in pt_path: generated_frames.append({"name": f"{pt_name_prefix} Power/Toughness", "src": pt_path, "masks": [], "bounds": {"height": 0.0839, "width": 0.2147, "x": 0.7227, "y": 0.8796}})
         main_frame_layers = []
         if isinstance(color_info, list): 
-            land_base = color_info[0]; base_src = self.build_frame_path(land_base['code'])
-            masks_pinline = [{"src": self.build_mask_path("pinline"), "name": "Pinline"}]
-            masks_rules = [{"src": self.build_mask_path("rules"), "name": "Rules"}]
-            masks_type = [{"src": self.build_mask_path("type"), "name": "Type"}]
-            masks_title = [{"src": self.build_mask_path("title"), "name": "Title"}]
-            masks_frame = [{"src": self.build_mask_path("frame"), "name": "Frame"}]
-            masks_border = [{"src": self.build_mask_path("border"), "name": "Border"}]
-            mask_right_half = {"src": "/img/frames/maskRightHalf.png", "name": "Right Half"}
+            land_base_frame_info = color_info[0]
+            base_src = self.build_frame_path(land_base_frame_info['code'])
             if len(color_info) > 2: 
-                c1, c2 = color_info[1], color_info[2]
-                main_frame_layers.extend([ {"name": f"{c2['name']} Land Frame", "src": self.build_land_frame_path(c2['code']), "masks": masks_pinline + [mask_right_half]}, {"name": f"{c1['name']} Land Frame", "src": self.build_land_frame_path(c1['code']), "masks": masks_pinline}, {"name": "Land Frame", "src": base_src, "masks": masks_type}, {"name": "Land Frame", "src": base_src, "masks": masks_title}, {"name": f"{c2['name']} Land Frame", "src": self.build_land_frame_path(c2['code']), "masks": masks_rules + [mask_right_half]}, {"name": f"{c1['name']} Land Frame", "src": self.build_land_frame_path(c1['code']), "masks": masks_rules}, {"name": "Land Frame", "src": base_src, "masks": masks_frame}, {"name": "Land Frame", "src": base_src, "masks": masks_border}])
+                first_cc, second_cc = color_info[1]['code'], color_info[2]['code']
+                first_cn, second_cn = color_info[1]['name'], color_info[2]['name']
+                main_frame_layers.extend([
+                    {"name": f"{second_cn} Land Frame", "src": self.build_land_frame_path(second_cc), "masks": [{"src": self.build_mask_path("pinline"), "name": "Pinline"}, {"src": "/img/frames/maskRightHalf.png", "name": "Right Half"}]},
+                    {"name": f"{first_cn} Land Frame", "src": self.build_land_frame_path(first_cc), "masks": [{"src": self.build_mask_path("pinline"), "name": "Pinline"}]},
+                    {"name": "Land Frame", "src": base_src, "masks": [{"src": self.build_mask_path("type"), "name": "Type"}]},
+                    {"name": "Land Frame", "src": base_src, "masks": [{"src": self.build_mask_path("title"), "name": "Title"}]},
+                    {"name": f"{second_cn} Land Frame", "src": self.build_land_frame_path(second_cc), "masks": [{"src": self.build_mask_path("rules"), "name": "Rules"}, {"src": "/img/frames/maskRightHalf.png", "name": "Right Half"}]},
+                    {"name": f"{first_cn} Land Frame", "src": self.build_land_frame_path(first_cc), "masks": [{"src": self.build_mask_path("rules"), "name": "Rules"}]},
+                    {"name": "Land Frame", "src": base_src, "masks": [{"src": self.build_mask_path("frame"), "name": "Frame"}]},
+                    {"name": "Land Frame", "src": base_src, "masks": [{"src": self.build_mask_path("border"), "name": "Border"}]}])
             elif len(color_info) > 1: 
                 mana_color = color_info[1]
-                main_frame_layers.extend([ {"name": f"{mana_color['name']} Land Frame", "src": self.build_land_frame_path(mana_color['code']), "masks": masks_pinline}, {"name": "Land Frame", "src": base_src, "masks": masks_type}, {"name": "Land Frame", "src": base_src, "masks": masks_title}, {"name": f"{mana_color['name']} Land Frame", "src": self.build_land_frame_path(mana_color['code']), "masks": masks_rules}, {"name": "Land Frame", "src": base_src, "masks": masks_frame}, {"name": "Land Frame", "src": base_src, "masks": masks_border}])
-            else: main_frame_layers.extend([{"name": "Land Frame", "src": base_src, "masks": [{"src": self.build_mask_path(m), "name": m.capitalize()}]} for m in ["pinline", "type", "title", "rules", "frame", "border"]])
+                main_frame_layers.extend([
+                    {"name": f"{mana_color['name']} Land Frame", "src": self.build_land_frame_path(mana_color['code']), "masks": [{"src": self.build_mask_path("pinline"), "name": "Pinline"}]},
+                    {"name": "Land Frame", "src": base_src, "masks": [{"src": self.build_mask_path("type"), "name": "Type"}]},
+                    {"name": "Land Frame", "src": base_src, "masks": [{"src": self.build_mask_path("title"), "name": "Title"}]},
+                    {"name": f"{mana_color['name']} Land Frame", "src": self.build_land_frame_path(mana_color['code']), "masks": [{"src": self.build_mask_path("rules"), "name": "Rules"}]},
+                    {"name": "Land Frame", "src": base_src, "masks": [{"src": self.build_mask_path("frame"), "name": "Frame"}]},
+                    {"name": "Land Frame", "src": base_src, "masks": [{"src": self.build_mask_path("border"), "name": "Border"}]}])
+            else: main_frame_layers.extend([{"name": "Land Frame", "src": base_src, "masks": [{"src": self.build_mask_path(mask_name), "name": mask_name.capitalize()}]} for mask_name in ["pinline", "type", "title", "rules", "frame", "border"]])
         elif isinstance(color_info, dict): 
-            code, name = color_info.get('code'), color_info.get('name')
-            if code and name: main_frame_layers.extend([{"name": f"{name} Frame", "src": self.build_frame_path(code), "masks": [{"src": self.build_mask_path(m), "name": m.capitalize()}]} for m in ["pinline", "type", "title", "rules", "frame", "border"]])
+            main_frame_color_code, main_frame_color_name = color_info.get('code'), color_info.get('name')
+            if main_frame_color_code and main_frame_color_name:
+                main_frame_src = self.build_frame_path(main_frame_color_code)
+                main_frame_layers.extend([{"name": f"{main_frame_color_name} Frame", "src": main_frame_src, "masks": [{"src": self.build_mask_path(mask_name), "name": mask_name.capitalize()}]} for mask_name in ["pinline", "type", "title", "rules", "frame", "border"]])
         generated_frames.extend(main_frame_layers)
         return generated_frames
-
+    
     def build_seventh_edition_frames(self, color_info, card_data: Dict) -> List[Dict]:
-        frames = []; common_masks_data = [{"mask_name": "frame", "display_name": "Frame"}, {"mask_name": "trim", "display_name": "Textbox Pinline"}, {"mask_name": "border", "display_name": "Border"}]
-        rules_mask_data = {"mask_name": "rules", "display_name": "Rules"}
-        pinline_mask_data = {"mask_name": "pinline", "display_name": "Pinline"}
-        def create_frame_entry(name_prefix, frame_src, mask_data): return {"name": f"{name_prefix} Frame", "src": frame_src, "masks": [{"src": self.build_mask_path(mask_data["mask_name"]), "name": mask_data["display_name"]}]}
-        def create_land_frame_entry(name_prefix, frame_src, mask_data, half_mask=False):
-            masks = [{"src": self.build_mask_path(mask_data["mask_name"]), "name": mask_data["display_name"]}]
-            if half_mask: masks.append({"src": "/img/frames/maskRightHalf.png", "name": "Right Half"})
-            return {"name": f"{name_prefix} Land Frame", "src": frame_src, "masks": masks}
-
+        frames = []
+        common_masks = ["frame", "trim", "border"] 
         if isinstance(color_info, list): 
-            land_frame_info = color_info[0]; base_frame_src = self.build_frame_path(land_frame_info['code'])
-            frames.append(create_frame_entry(land_frame_info['name'], base_frame_src, pinline_mask_data))
+            land_frame = color_info[0]
             if len(color_info) > 2: 
-                c1, c2 = color_info[1], color_info[2]
-                frames.append(create_land_frame_entry(c2['name'], self.build_land_frame_path(c2['code']), rules_mask_data, half_mask=True))
-                frames.append(create_land_frame_entry(c1['name'], self.build_land_frame_path(c1['code']), rules_mask_data))
+                first_color, second_color = color_info[1], color_info[2]
+                frames.append({"name": f"{land_frame['name']} Frame", "src": self.build_frame_path(land_frame['code']), "masks": [{"src": self.build_mask_path("pinline"), "name": "Pinline"}]})
+                frames.append({"name": f"{second_color['name']} Land Frame", "src": self.build_land_frame_path(second_color['code']), "masks": [{"src": self.build_mask_path("rules"), "name": "Rules"}, {"src": "/img/frames/maskRightHalf.png", "name": "Right Half"}]})
+                frames.append({"name": f"{first_color['name']} Land Frame", "src": self.build_land_frame_path(first_color['code']), "masks": [{"src": self.build_mask_path("rules"), "name": "Rules"}]})
+                frames.extend([{"name": f"{land_frame['name']} Frame", "src": self.build_frame_path(land_frame['code']), "masks": [{"src": self.build_mask_path(mask_name), "name": mask_name.capitalize() if mask_name != "trim" else "Textbox Pinline"}]} for mask_name in common_masks])
             elif len(color_info) > 1: 
-                frames.append(create_land_frame_entry(color_info[1]['name'], self.build_land_frame_path(color_info[1]['code']), rules_mask_data))
-            else: frames.append(create_frame_entry(land_frame_info['name'], base_frame_src, rules_mask_data))
-            for mask_d in common_masks_data: frames.append(create_frame_entry(land_frame_info['name'], base_frame_src, mask_d))
+                color = color_info[1]
+                frames.append({"name": f"{land_frame['name']} Frame", "src": self.build_frame_path(land_frame['code']), "masks": [{"src": self.build_mask_path("pinline"), "name": "Pinline"}]})
+                frames.append({"name": f"{color['name']} Land Frame", "src": self.build_land_frame_path(color['code']), "masks": [{"src": self.build_mask_path("rules"), "name": "Rules"}]})
+                frames.extend([{"name": f"{land_frame['name']} Frame", "src": self.build_frame_path(land_frame['code']), "masks": [{"src": self.build_mask_path(mask_name), "name": mask_name.capitalize() if mask_name != "trim" else "Textbox Pinline"}]} for mask_name in common_masks])
+            else: frames = [{"name": f"{land_frame['name']} Frame", "src": self.build_frame_path(land_frame['code']), "masks": [{"src": self.build_mask_path(mask_name), "name": mask_name.capitalize() if mask_name != "trim" else "Textbox Pinline"}]} for mask_name in ["pinline", "rules"] + common_masks]
         else: 
-            code, name = color_info['code'], color_info['name']; frame_src = self.build_frame_path(code)
-            for mask_d in [pinline_mask_data, rules_mask_data] + common_masks_data: frames.append(create_frame_entry(name, frame_src, mask_d))
+            color_code, color_name = color_info['code'], color_info['name']
+            frames = [{"name": f"{color_name} Frame", "src": self.build_frame_path(color_code), "masks": [{"src": self.build_mask_path(mask_name), "name": mask_name.capitalize() if mask_name != "trim" else "Textbox Pinline"}]} for mask_name in ["pinline", "rules"] + common_masks]
         return frames
 
     def build_m15ub_frames(self, color_info: Union[Dict, List], card_data: Dict) -> List[Dict]:
@@ -446,64 +468,75 @@ class CardBuilder:
                 elif is_true_colorless: pt_code_to_use, pt_name_prefix = COLOR_CODE_MAP.get('C', {}).get('code'), COLOR_CODE_MAP.get('C', {}).get('name', "Colorless")
                 elif color_info.get('code') in ['w','u','b','r','g']: pt_code_to_use, pt_name_prefix = color_info['code'], color_info['name']
             if pt_code_to_use:
-                pt_path = self.build_pt_frame_path(pt_code_to_use); pt_bounds = self.frame_config.get("pt_bounds")
-                if pt_path and pt_bounds and "/error_path" not in pt_path: generated_frames.append({"name": f"{pt_name_prefix} P/T", "src": pt_path, "masks": [], "bounds": pt_bounds})
+                pt_path_format_str = self.frame_config.get("pt_path_format"); pt_bounds_config = self.frame_config.get("pt_bounds"); pt_path = None 
+                if not pt_path_format_str: logger.error(f"PT Error: pt_path_format missing in frame_config for {self.frame_type}")
+                else: pt_path = self.build_pt_frame_path(pt_code_to_use) 
+                if pt_path and pt_bounds_config and "/error_path" not in pt_path: generated_frames.append({"name": f"{pt_name_prefix} Power/Toughness", "src": pt_path, "masks": [], "bounds": pt_bounds_config})
         is_legendary = 'Legendary' in type_line
         if self.legendary_crowns and is_legendary:
-            pc_code, sc_code, pc_name, sc_name = None, None, "Legend", "Secondary"
-            if isinstance(color_info, dict):
-                if color_info.get('is_gold') and color_info.get('component_colors'): comps = color_info.get('component_colors',[]); pc_code, pc_name = (comps[0]['code'], comps[0]['name']) if comps else (None,None); sc_code, sc_name = (comps[1]['code'], comps[1]['name']) if len(comps)>1 else (None,None)
-                elif color_info.get('code'): pc_code, pc_name = color_info['code'], color_info['name']
-            elif is_land_card and isinstance(color_info, list):
-                if len(color_info) > 1 and isinstance(color_info[1],dict): pc_code, pc_name = color_info[1].get('code'), color_info[1].get('name')
-                if len(color_info) > 2 and isinstance(color_info[2],dict): sc_code, sc_name = color_info[2].get('code'), color_info[2].get('name')
-                elif not pc_code and len(color_info)==1 and isinstance(color_info[0],dict): pc_code, pc_name = color_info[0].get('code'),color_info[0].get('name')
-            if pc_code:
-                fmt=self.frame_config.get("legend_crown_path_format_m15ub"); b=self.frame_config.get("legend_crown_bounds"); cs=self.frame_config.get("legend_crown_cover_src","/img/black.png"); cb=self.frame_config.get("legend_crown_cover_bounds")
-                if fmt and b and cs and cb:
-                    sec_path = self._format_path(fmt,color_code_upper=sc_code.upper()) if sc_code else None
-                    pri_path = self._format_path(fmt,color_code_upper=pc_code.upper())
-                    if sc_code and sec_path and "/error_path" not in sec_path: generated_frames.append({"name":f"{sc_name} Legend Crown","src":sec_path,"masks":[{"src":"/img/frames/maskRightHalf.png","name":"Right Half"}],"bounds":b})
-                    if pri_path and "/error_path" not in pri_path: generated_frames.extend([{"name":f"{pc_name} Legend Crown","src":pri_path,"masks":[],"bounds":b},{"name":"Legend Crown Border Cover","src":cs,"masks":[],"bounds":cb}])
-        main_layers = []; base_fmt=self.frame_config.get("frame_path_format"); land_fmt=self.frame_config.get("land_frame_path_format"); mask_fmt=self.frame_config.get("mask_path_format")
-        if not all([base_fmt,land_fmt,mask_fmt]): logger.error(f"M15UB MainFrame path formats missing for '{card_name_for_logging}'."); return generated_frames
-        p_msk=self._format_path(mask_fmt,mask_name="Pinline"); ty_msk=self._format_path(mask_fmt,mask_name="Type"); ti_msk=self._format_path(mask_fmt,mask_name="Title"); r_msk=self._format_path(mask_fmt,mask_name="Rules")
-        fr_msk=self.frame_config.get("frame_mask_name_for_main_frame_layer"); bo_msk=self.frame_config.get("border_mask_name_for_main_frame_layer")
-        pc_main,sc_main,pc_name_main,sc_name_main,ttfb_c,ttfb_n = None,None,"Unknown",None,None,None
-        codes={k:COLOR_CODE_MAP.get(k,{}).get('code') for k in ['M','L','A','V','C']}; names={k:COLOR_CODE_MAP.get(k,{}).get('name') for k in ['M','L','A','V','C']}
-        if is_land_card and isinstance(color_info,list):
-            ttfb_c,ttfb_n = codes.get('L'),names.get('L',"Land")
-            if len(color_info)>1 and isinstance(color_info[1],dict): pc_main,pc_name_main=color_info[1].get('code'),color_info[1].get('name');_sc=color_info[2] if len(color_info)>2 and isinstance(color_info[2],dict) else {}; sc_main,sc_name_main=_sc.get('code'),_sc.get('name')
-            elif len(color_info)==1 and isinstance(color_info[0],dict): pc_main,pc_name_main=color_info[0].get('code'),color_info[0].get('name')
-            else: logger.warning(f"Unexpected land color_info for '{card_name_for_logging}'. Defaulting."); pc_main,pc_name_main=codes.get('L'),names.get('L',"Land")
-        elif isinstance(color_info,dict):
-            if color_info.get('is_gold'): comps=color_info.get('component_colors',[]); pc_main,pc_name_main=(comps[0]['code'],comps[0]['name']) if comps else (None,None); sc_main,sc_name_main=(comps[1]['code'],comps[1]['name']) if len(comps)>1 else (None,None); ttfb_c,ttfb_n=codes.get('M'),names.get('M',"Multicolored")
-            elif color_info.get('is_vehicle'): pc_main,pc_name_main=codes.get('V'),names.get('V',"Vehicle"); ttfb_c,ttfb_n=pc_main,pc_name_main
-            elif color_info.get('is_artifact'): pc_main,pc_name_main=codes.get('A'),names.get('A',"Artifact"); ttfb_c,ttfb_n=pc_main,pc_name_main
-            elif color_info.get('code')==codes.get('C'): pc_main,pc_name_main=codes.get('C'),names.get('C',"Colorless"); ttfb_c,ttfb_n=pc_main,pc_name_main
-            elif color_info.get('code'): pc_main,pc_name_main=color_info['code'],color_info['name']; ttfb_c,ttfb_n=pc_main,pc_name_main
-        if not pc_main: logger.error(f"M15UB MainFrame: Primary color code missing for '{card_name_for_logging}'."); return generated_frames
-        if not ttfb_c: logger.warning(f"M15UB MainFrame: TTFB code missing for '{card_name_for_logging}', falling back to primary."); ttfb_c,ttfb_n=pc_main,pc_name_main
-        src_pr,src_tt,src_fb = "","",""
-        if is_land_card: src_pr=self._format_path(land_fmt if pc_main!=codes.get('L') else base_fmt,color_code=pc_main); src_tt=src_pr; src_fb=self._format_path(base_fmt,color_code=codes.get('L'))
-        else: src_pr=self._format_path(base_fmt,color_code=pc_main); src_tt=self._format_path(base_fmt,color_code=ttfb_c); src_fb=src_tt
-        if any("/error_path" in p for p in [src_pr,src_tt,src_fb]): logger.error(f"M15UB MainFrame: Error in critical frame paths for '{card_name_for_logging}'."); return generated_frames
-        tt_pfx = pc_name_main if (is_land_card and pc_main!=codes.get('L')) else ttfb_n
-        common_layers_end = [{"name":f"{ttfb_n} Frame","src":src_fb,"masks":[{"src":fr_msk,"name":"Frame"}]},{"name":f"{ttfb_n} Frame","src":src_fb,"masks":[{"src":bo_msk,"name":"Border"}]}]
-        if sc_main:
-            src_sc = self._format_path(land_fmt if is_land_card else base_fmt,color_code=sc_main)
-            if "/error_path" not in src_sc: main_layers.extend([{"name":f"{sc_name_main} Frame","src":src_sc,"masks":[{"src":p_msk,"name":"Pinline"},{"src":"/img/frames/maskRightHalf.png","name":"Right Half"}]},{"name":f"{pc_name_main} Frame","src":src_pr,"masks":[{"src":p_msk,"name":"Pinline"}]},{"name":f"{ttfb_n} Frame","src":src_fb,"masks":[{"src":ty_msk,"name":"Type"}]},{"name":f"{ttfb_n} Frame","src":src_fb,"masks":[{"src":ti_msk,"name":"Title"}]},{"name":f"{sc_name_main} Frame","src":src_sc,"masks":[{"src":r_msk,"name":"Rules"},{"src":"/img/frames/maskRightHalf.png","name":"Right Half"}]},{"name":f"{pc_name_main} Frame","src":src_pr,"masks":[{"src":r_msk,"name":"Rules"}]}])
-            else: logger.warning(f"M15UB: Error for secondary path '{card_name_for_logging}'. Fallback.")
-        if not main_layers or (sc_main and "/error_path" in src_sc) : 
-            main_layers.extend([{"name":f"{pc_name_main} Frame","src":src_pr,"masks":[{"src":p_msk,"name":"Pinline"}]},{"name":f"{tt_pfx} Frame","src":src_tt,"masks":[{"src":ty_msk,"name":"Type"}]},{"name":f"{tt_pfx} Frame","src":src_tt,"masks":[{"src":ti_msk,"name":"Title"}]},{"name":f"{pc_name_main} Frame","src":src_pr,"masks":[{"src":r_msk,"name":"Rules"}]}])
-        main_layers.extend(common_layers_end); generated_frames.extend(main_layers)
+            primary_crown_color_code, secondary_crown_color_code = None, None; primary_crown_color_name, secondary_crown_color_name = "Legend", "Secondary"
+            if isinstance(color_info, dict) and color_info.get('is_gold') and color_info.get('component_colors'):
+                components = color_info['component_colors']
+                if len(components) >= 1: primary_crown_color_code, primary_crown_color_name = components[0]['code'], components[0]['name']
+                if len(components) >= 2: secondary_crown_color_code, secondary_crown_color_name = components[1]['code'], components[1]['name']
+            elif isinstance(color_info, dict) and color_info.get('code'): primary_crown_color_code, primary_crown_color_name = color_info['code'], color_info['name']
+            elif is_land_card and isinstance(color_info, list): 
+                if len(color_info) > 1 and isinstance(color_info[1], dict) and 'code' in color_info[1]: primary_crown_color_code, primary_crown_color_name = color_info[1]['code'], color_info[1]['name']
+                if len(color_info) > 2 and isinstance(color_info[2], dict) and 'code' in color_info[2]: secondary_crown_color_code, secondary_crown_color_name = color_info[2]['code'], color_info[2]['name']
+                elif not primary_crown_color_code and len(color_info) == 1 and isinstance(color_info[0], dict) and 'code' in color_info[0]: primary_crown_color_code, primary_crown_color_name = color_info[0]['code'], color_info[0]['name']
+            if primary_crown_color_code:
+                crown_src_path_format = self.frame_config.get("legend_crown_path_format_m15ub"); crown_bounds = self.frame_config.get("legend_crown_bounds"); crown_cover_src = self.frame_config.get("legend_crown_cover_src", "/img/black.png"); crown_cover_bounds = self.frame_config.get("legend_crown_cover_bounds")
+                if crown_src_path_format and crown_bounds and crown_cover_src and crown_cover_bounds:
+                    formatted_crown_path_secondary = self._format_path(crown_src_path_format, color_code_upper=secondary_crown_color_code.upper()) if secondary_crown_color_code else None
+                    formatted_crown_path_primary = self._format_path(crown_src_path_format, color_code_upper=primary_crown_color_code.upper())
+                    if secondary_crown_color_code and formatted_crown_path_secondary and "/error_path" not in formatted_crown_path_secondary: generated_frames.append({"name": f"{secondary_crown_color_name} Legend Crown", "src": formatted_crown_path_secondary, "masks": [{"src": "/img/frames/maskRightHalf.png", "name": "Right Half"}], "bounds": crown_bounds})
+                    if formatted_crown_path_primary and "/error_path" not in formatted_crown_path_primary: generated_frames.append({"name": f"{primary_crown_color_name} Legend Crown", "src": formatted_crown_path_primary, "masks": [], "bounds": crown_bounds}); generated_frames.append({"name": "Legend Crown Border Cover", "src": crown_cover_src, "masks": [], "bounds": crown_cover_bounds})
+        main_frame_layers = []; base_frame_path_fmt = self.frame_config.get("frame_path_format"); land_frame_path_fmt = self.frame_config.get("land_frame_path_format"); mask_path_fmt = self.frame_config.get("mask_path_format")
+        if not all([base_frame_path_fmt, land_frame_path_fmt, mask_path_fmt]): logger.error(f"M15UB MainFrame: Essential path formats missing for '{card_name_for_logging}'."); generated_frames.extend(main_frame_layers); return generated_frames
+        pinline_mask_src = self._format_path(mask_path_fmt, mask_name="Pinline"); type_mask_src = self._format_path(mask_path_fmt, mask_name="Type"); title_mask_src = self._format_path(mask_path_fmt, mask_name="Title"); rules_mask_src = self._format_path(mask_path_fmt, mask_name="Rules")
+        frame_mask_src = self.frame_config.get("frame_mask_name_for_main_frame_layer"); border_mask_src = self.frame_config.get("border_mask_name_for_main_frame_layer")
+        primary_color_code_main, secondary_color_code_main = None, None; primary_color_name_main, secondary_color_name_main = "Unknown", None; ttfb_code, ttfb_name = None, None 
+        base_codes = { k: COLOR_CODE_MAP.get(k, {}).get('code') for k in ['M', 'L', 'A', 'V', 'C'] }; base_names = { k: COLOR_CODE_MAP.get(k, {}).get('name') for k in ['M', 'L', 'A', 'V', 'C'] }
+        if is_land_card and isinstance(color_info, list): 
+            ttfb_code, ttfb_name = base_codes.get('L'), base_names.get('L', "Land")
+            if len(color_info) > 1 and isinstance(color_info[1], dict) and 'code' in color_info[1]: 
+                primary_color_code_main, primary_color_name_main = color_info[1]['code'], color_info[1]['name']
+                if len(color_info) > 2 and isinstance(color_info[2], dict) and 'code' in color_info[2]: secondary_color_code_main, secondary_color_name_main = color_info[2]['code'], color_info[2]['name']
+            elif len(color_info) == 1 and isinstance(color_info[0], dict) and 'code' in color_info[0]: primary_color_code_main, primary_color_name_main = color_info[0]['code'], color_info[0]['name']
+            else: logger.warning(f"Unexpected land color_info for '{card_name_for_logging}'. Defaulting."); primary_color_code_main, primary_color_name_main = base_codes.get('L'), base_names.get('L', "Land")
+        elif isinstance(color_info, dict):
+            if color_info.get('is_gold'): comps = color_info.get('component_colors', []); primary_color_code_main, primary_color_name_main = (comps[0]['code'], comps[0]['name']) if comps else (None,None); secondary_color_code_main, secondary_color_name_main=(comps[1]['code'],comps[1]['name']) if len(comps)>1 else (None,None); ttfb_code,ttfb_name=base_codes.get('M'),base_names.get('M',"Multicolored")
+            elif color_info.get('is_vehicle'): primary_color_code_main, primary_color_name_main = base_codes.get('V'), base_names.get('V', "Vehicle"); ttfb_code, ttfb_name = primary_color_code_main, primary_color_name_main
+            elif color_info.get('is_artifact'): primary_color_code_main, primary_color_name_main = base_codes.get('A'), base_names.get('A', "Artifact"); ttfb_code, ttfb_name = primary_color_code_main, primary_color_name_main
+            elif color_info.get('code') == base_codes.get('C'): primary_color_code_main, primary_color_name_main = base_codes.get('C'), base_names.get('C', "Colorless"); ttfb_code, ttfb_name = primary_color_code_main, primary_color_name_main
+            elif color_info.get('code'): primary_color_code_main, primary_color_name_main = color_info['code'], color_info['name']; ttfb_code, ttfb_name = primary_color_code_main, primary_color_name_main
+        if not primary_color_code_main : logger.error(f"M15UB MainFrame: Primary color code MAIN missing for '{card_name_for_logging}'. color_info: {color_info}"); generated_frames.extend(main_frame_layers); return generated_frames
+        if not ttfb_code: logger.warning(f"M15UB MainFrame: TTFB code missing for '{card_name_for_logging}', falling back to primary. color_info: {color_info}"); ttfb_code, ttfb_name = primary_color_code_main, primary_color_name_main 
+        src_pinline_rules = ""; src_type_title = ""; src_frame_border = ""
+        if is_land_card:
+            if primary_color_code_main != base_codes.get('L'): src_pinline_rules = self._format_path(land_frame_path_fmt, color_code=primary_color_code_main); src_type_title = src_pinline_rules 
+            else: src_pinline_rules = self._format_path(base_frame_path_fmt, color_code=primary_color_code_main); src_type_title = src_pinline_rules 
+            src_frame_border = self._format_path(base_frame_path_fmt, color_code=base_codes.get('L')) 
+        else: src_pinline_rules = self._format_path(base_frame_path_fmt, color_code=primary_color_code_main); src_type_title = self._format_path(base_frame_path_fmt, color_code=ttfb_code); src_frame_border = src_type_title 
+        if "/error_path" in src_pinline_rules or "/error_path" in src_type_title or "/error_path" in src_frame_border : logger.error(f"M15UB MainFrame: Error in critical frame paths for '{card_name_for_logging}'."); generated_frames.extend(main_frame_layers); return generated_frames
+        type_title_name_prefix = primary_color_name_main if (is_land_card and primary_color_code_main != base_codes.get('L')) else ttfb_name
+        if secondary_color_code_main: 
+            src_secondary_pinline_rules = self._format_path(land_frame_path_fmt if is_land_card else base_frame_path_fmt, color_code=secondary_color_code_main)
+            if "/error_path" not in src_secondary_pinline_rules: main_frame_layers.extend([ {"name": f"{secondary_color_name_main} Frame", "src": src_secondary_pinline_rules, "masks": [{"src": pinline_mask_src, "name": "Pinline"}, {"src": "/img/frames/maskRightHalf.png", "name": "Right Half"}]}, {"name": f"{primary_color_name_main} Frame", "src": src_pinline_rules, "masks": [{"src": pinline_mask_src, "name": "Pinline"}]}, {"name": f"{ttfb_name} Frame", "src": src_frame_border, "masks": [{"src": type_mask_src, "name": "Type"}]}, {"name": f"{ttfb_name} Frame", "src": src_frame_border, "masks": [{"src": title_mask_src, "name": "Title"}]}, {"name": f"{secondary_color_name_main} Frame", "src": src_secondary_pinline_rules, "masks": [{"src": rules_mask_src, "name": "Rules"}, {"src": "/img/frames/maskRightHalf.png", "name": "Right Half"}]}, {"name": f"{primary_color_name_main} Frame", "src": src_pinline_rules, "masks": [{"src": rules_mask_src, "name": "Rules"}]}, {"name": f"{ttfb_name} Frame", "src": src_frame_border, "masks": [{"src": frame_mask_src, "name": "Frame"}]}, {"name": f"{ttfb_name} Frame", "src": src_frame_border, "masks": [{"src": border_mask_src, "name": "Border"}]}])
+            else: 
+                logger.warning(f"M15UB MainFrame: Error generating secondary path for '{card_name_for_logging}'. Falling back to primary layers.")
+                main_frame_layers.extend([ {"name": f"{primary_color_name_main} Frame", "src": src_pinline_rules, "masks": [{"src": pinline_mask_src, "name": "Pinline"}]}, {"name": f"{type_title_name_prefix} Frame", "src": src_type_title, "masks": [{"src": type_mask_src, "name": "Type"}]}, {"name": f"{type_title_name_prefix} Frame", "src": src_type_title, "masks": [{"src": title_mask_src, "name": "Title"}]}, {"name": f"{primary_color_name_main} Frame", "src": src_pinline_rules, "masks": [{"src": rules_mask_src, "name": "Rules"}]}, {"name": f"{ttfb_name} Frame", "src": src_frame_border, "masks": [{"src": frame_mask_src, "name": "Frame"}]}, {"name": f"{ttfb_name} Frame", "src": src_frame_border, "masks": [{"src": border_mask_src, "name": "Border"}]}])
+        else: 
+            main_frame_layers.extend([ {"name": f"{primary_color_name_main} Frame", "src": src_pinline_rules, "masks": [{"src": pinline_mask_src, "name": "Pinline"}]}, {"name": f"{type_title_name_prefix} Frame", "src": src_type_title, "masks": [{"src": type_mask_src, "name": "Type"}]}, {"name": f"{type_title_name_prefix} Frame", "src": src_type_title, "masks": [{"src": title_mask_src, "name": "Title"}]}, {"name": f"{primary_color_name_main} Frame", "src": src_pinline_rules, "masks": [{"src": rules_mask_src, "name": "Rules"}]}, {"name": f"{ttfb_name} Frame", "src": src_frame_border, "masks": [{"src": frame_mask_src, "name": "Frame"}]}, {"name": f"{ttfb_name} Frame", "src": src_frame_border, "masks": [{"src": border_mask_src, "name": "Border"}]}])
+        generated_frames.extend(main_frame_layers)
         return generated_frames
+    # --- End of Pasted Frame Building Methods ---
 
     def build_card_data(self, card_name: str, card_data: Dict, color_info, 
                         is_basic_land_fetch_mode: bool = False,
                         basic_land_type_override: Optional[str] = None) -> Dict:
     
-        logger.debug(f"build_card_data for '{card_name}', frame_type '{self.frame_type}'. Upscale Art: {self.upscale_art}")
+        logger.debug(f"build_card_data for '{card_name}', frame_type '{self.frame_type}'. Upscale Art: {self.upscale_art}, Auto-fit Art: {self.auto_fit_art}")
         
         frames_for_card_obj = []
         if self.frame_type == "8th": frames_for_card_obj = self.build_eighth_edition_frames(color_info, card_data)
@@ -536,149 +569,125 @@ class CardBuilder:
         collector_number_from_scryfall = card_data.get('collector_number', '000')
         artist_name = card_data.get('artist', DEFAULT_INFO_ARTIST)
         
-        scryfall_art_crop_url = ""
-        if 'image_uris' in card_data and 'art_crop' in card_data['image_uris']: scryfall_art_crop_url = card_data['image_uris']['art_crop']
+        rarity_from_scryfall = card_data.get('rarity', 'c')
+        rarity_code_for_symbol = RARITY_MAP.get(rarity_from_scryfall, rarity_from_scryfall)
+
+        art_crop_url = "" 
+        if 'image_uris' in card_data and 'art_crop' in card_data['image_uris']: art_crop_url = card_data['image_uris']['art_crop']
         elif 'card_faces' in card_data and card_data['card_faces']:
             for face in card_data['card_faces']:
                 if 'image_uris' in face and 'art_crop' in face['image_uris']: 
-                    scryfall_art_crop_url = face['image_uris']['art_crop']; break
+                    art_crop_url = face['image_uris']['art_crop']; break
         
-        final_art_source_url = scryfall_art_crop_url 
-        hosted_original_art_url = None
-        hosted_upscaled_art_url = None 
-
         art_x = self.frame_config.get("art_x", 0.0); art_y = self.frame_config.get("art_y", 0.0)
         art_zoom = self.frame_config.get("art_zoom", 1.0); art_rotate = self.frame_config.get("art_rotate", "0")
         
-        original_art_bytes_for_processing = None 
+        final_art_source_url = art_crop_url 
+        hosted_original_art_url = None
+        hosted_upscaled_art_url = None
+        
+        # This will hold the bytes of the ORIGINAL art, prioritized: Nginx -> Scryfall
+        # Used as the source for upscaling pipeline if needed. Auto-fit uses its own Scryfall fetch.
+        original_art_bytes_for_pipeline: Optional[bytes] = None 
         original_image_mime_type: Optional[str] = None 
-        original_image_ext = ".jpg" 
+        original_image_ext = ".jpg" # Default
 
-        if scryfall_art_crop_url:
+        # Phase 1: Auto-fit Art (if enabled, ALWAYS fetches from Scryfall for this calculation)
+        if self.auto_fit_art and art_crop_url:
+            logger.info(f"Performing auto-fit art for {art_crop_url}")
+            auto_fit_params = self._calculate_auto_fit_art_params(art_crop_url) 
+            if auto_fit_params: 
+                art_x, art_y, art_zoom = auto_fit_params["artX"], auto_fit_params["artY"], auto_fit_params["artZoom"]
+                logger.info(f"Auto-fit art params applied for {scryfall_card_name}: X={art_x:.4f}, Y={art_y:.4f}, Zoom={art_zoom:.4f}")
+            else:
+                logger.warning(f"Auto-fit art calculation failed for {art_crop_url}. Using default art parameters from config.")
+        
+        # Phase 2: Upscaling and Hosting Logic
+        if self.upscale_art and art_crop_url and self.image_server_base_url and self.ilaria_upscaler_base_url:
             sanitized_card_name = sanitize_for_filename(scryfall_card_name)
             set_code_sanitized = sanitize_for_filename(set_code_from_scryfall)
             collector_number_sanitized = sanitize_for_filename(collector_number_from_scryfall)
             
-            try:
-                url_path_no_query = scryfall_art_crop_url.split('?')[0]
+            try: # Initial extension from URL
+                url_path_no_query = art_crop_url.split('?')[0]
                 _, ext_from_url = os.path.splitext(url_path_no_query)
                 if ext_from_url and ext_from_url.lower() in ['.jpg', '.jpeg', '.png', '.gif', '.webp']:
                     original_image_ext = ext_from_url.lower()
             except Exception: pass
 
-            # This variable will hold bytes of the original art, whether from Scryfall or Nginx
-            # It's used for auto-fit AND as the source for upscaling (by uploading to Nginx first if not already there)
-            current_original_art_bytes = None 
-
-            # Phase 1: Determine filename and check for existing files
             if not original_image_ext.startswith('.'): original_image_ext = '.' + original_image_ext
-            # UPDATED FILENAME FORMAT
             base_art_filename_original_ext = f"{sanitized_card_name}_{set_code_sanitized}_{collector_number_sanitized}{original_image_ext}"
-            
             expected_original_url_on_nginx = self._construct_nginx_public_url("original", base_art_filename_original_ext)
-            upscaler_model_sanitized = sanitize_for_filename(self.upscaler_model_name)
             
+            upscaler_model_sanitized = sanitize_for_filename(self.upscaler_model_name)
             upscaled_image_expected_ext_for_check = ".png" 
-            # UPDATED FILENAME FORMAT
             base_art_filename_upscaled_check = f"{sanitized_card_name}_{set_code_sanitized}_{collector_number_sanitized}{upscaled_image_expected_ext_for_check}"
             expected_upscaled_url_on_nginx = self._construct_nginx_public_url(upscaler_model_sanitized, base_art_filename_upscaled_check)
             
             used_existing_upscaled = False
 
-            # Check if upscaled version already exists on Nginx
-            if self.upscale_art and self.image_server_base_url and self.ilaria_upscaler_base_url:
-                if expected_upscaled_url_on_nginx and self._check_if_file_exists_on_server(expected_upscaled_url_on_nginx):
-                    logger.info(f"Upscaled art '{base_art_filename_upscaled_check}' already on Nginx.")
-                    hosted_upscaled_art_url = expected_upscaled_url_on_nginx
-                    final_art_source_url = hosted_upscaled_art_url
-                    used_existing_upscaled = True
-                    # If upscaled exists, also record if original exists for completeness
-                    if not hosted_original_art_url and expected_original_url_on_nginx and self._check_if_file_exists_on_server(expected_original_url_on_nginx):
-                        hosted_original_art_url = expected_original_url_on_nginx
-
-            # Phase 2: If not using an existing upscaled image, prepare original art for auto-fit and/or upscaling
-            if not used_existing_upscaled and (self.auto_fit_art or (self.upscale_art and self.image_server_base_url and self.ilaria_upscaler_base_url) ):
-                # Try to get original art bytes:
-                # 1. From Nginx if it exists there
+            if expected_upscaled_url_on_nginx and self._check_if_file_exists_on_server(expected_upscaled_url_on_nginx):
+                logger.info(f"Upscaled art '{base_art_filename_upscaled_check}' already on Nginx.")
+                hosted_upscaled_art_url = expected_upscaled_url_on_nginx
+                final_art_source_url = hosted_upscaled_art_url
+                used_existing_upscaled = True 
+                # Adjust zoom for existing upscaled image
+                if self.upscaler_outscale_factor > 0:
+                    art_zoom = art_zoom / self.upscaler_outscale_factor 
+                    logger.info(f"Adjusted artZoom for existing upscaled image to: {art_zoom:.4f} (factor: {self.upscaler_outscale_factor})")
+                if not hosted_original_art_url and expected_original_url_on_nginx and self._check_if_file_exists_on_server(expected_original_url_on_nginx):
+                    hosted_original_art_url = expected_original_url_on_nginx
+            
+            if not used_existing_upscaled:
+                # Fetch original art bytes for the pipeline (if not already fetched or if needed)
+                # Try Nginx first for the pipeline if it exists
                 if expected_original_url_on_nginx and self._check_if_file_exists_on_server(expected_original_url_on_nginx):
-                    try:
-                        logger.debug(f"Fetching existing original art from Nginx for processing: {expected_original_url_on_nginx}")
-                        response = requests.get(expected_original_url_on_nginx, timeout=10); response.raise_for_status()
-                        current_original_art_bytes = response.content
-                        original_image_mime_type, det_ext = self._get_image_mime_type_and_extension(current_original_art_bytes)
-                        if det_ext: original_image_ext = det_ext # Update extension if needed
-                        if not original_image_ext.startswith('.'): original_image_ext = '.' + original_image_ext
-                        # Reconstruct filename with potentially more accurate extension
-                        base_art_filename_original_ext = f"{sanitized_card_name}_{set_code_sanitized}_{collector_number_sanitized}{original_image_ext}"
-                        hosted_original_art_url = expected_original_url_on_nginx # It's confirmed hosted
-                    except Exception as e: 
-                        logger.error(f"Failed to fetch existing original from Nginx ({expected_original_url_on_nginx}): {e}. Will try Scryfall if URL available.")
-                        current_original_art_bytes = None 
+                    logger.debug(f"Original art found on Nginx: {expected_original_url_on_nginx}. Fetching for pipeline.")
+                    original_art_bytes_for_pipeline = self._fetch_image_bytes(expected_original_url_on_nginx, "Nginx original for pipeline")
+                    if original_art_bytes_for_pipeline:
+                         hosted_original_art_url = expected_original_url_on_nginx # Already hosted
                 
-                # 2. If not on Nginx (or Nginx fetch failed), get from Scryfall
-                if not current_original_art_bytes and scryfall_art_crop_url:
-                    try:
-                        logger.debug(f"Fetching original art from Scryfall: {scryfall_art_crop_url}")
-                        response = requests.get(scryfall_art_crop_url, timeout=10); response.raise_for_status()
-                        if self.api_delay_seconds > 0 and (not hasattr(response, 'from_cache') or response.from_cache is False if hasattr(response, 'from_cache') else True): time.sleep(self.api_delay_seconds)
-                        current_original_art_bytes = response.content
-                        original_image_mime_type, det_ext = self._get_image_mime_type_and_extension(current_original_art_bytes)
-                        if det_ext: original_image_ext = det_ext
-                        if not original_image_ext.startswith('.'): original_image_ext = '.' + original_image_ext
-                        base_art_filename_original_ext = f"{sanitized_card_name}_{set_code_sanitized}_{collector_number_sanitized}{original_image_ext}"
-                        # Note: hosted_original_art_url will be set if this content is successfully PUT to Nginx later
-                    except Exception as e: logger.error(f"Failed to fetch art from Scryfall for {scryfall_art_crop_url}: {e}", exc_info=True)
+                if not original_art_bytes_for_pipeline: # If not on Nginx or Nginx fetch failed
+                    logger.debug(f"Original art not found/fetched from Nginx. Fetching from Scryfall for pipeline: {art_crop_url}")
+                    original_art_bytes_for_pipeline = self._fetch_image_bytes(art_crop_url, "Scryfall original for pipeline")
 
-            # Phase 3: Auto-fit (uses current_original_art_bytes if available)
-            if self.auto_fit_art and not used_existing_upscaled:
-                if current_original_art_bytes:
-                    # The "art_url_for_logging" for _from_data can be the scryfall_url or nginx_url depending on where bytes came from
-                    source_log_url = hosted_original_art_url if hosted_original_art_url else scryfall_art_crop_url
-                    auto_fit_params = self._calculate_auto_fit_art_params_from_data(current_original_art_bytes, source_log_url)
-                    if auto_fit_params: art_x, art_y, art_zoom = auto_fit_params["artX"], auto_fit_params["artY"], auto_fit_params["artZoom"]
-                    else: logger.warning(f"Auto-fit calculation failed for {base_art_filename_original_ext}.")
-                else:
-                    logger.warning(f"Auto-fit skipped for {base_art_filename_original_ext}: original art content not available.")
+                # If we have bytes, determine their actual mime and ext for filename accuracy
+                if original_art_bytes_for_pipeline:
+                    current_mime, current_ext = self._get_image_mime_type_and_extension(original_art_bytes_for_pipeline)
+                    if current_ext: original_image_ext = current_ext
+                    if original_image_mime_type is None : original_image_mime_type = current_mime # Set if not already set by Scryfall fetch specifically for pipeline
 
-            # Phase 4: Upscaling and Hosting (if not used_existing_upscaled and relevant flags are on)
-            if self.upscale_art and not used_existing_upscaled and self.image_server_base_url and self.ilaria_upscaler_base_url:
-                if current_original_art_bytes:
-                    # Host original to Nginx if not already marked as hosted (it might have been found in Phase 2 but content refetched)
-                    # or if its filename changed due to more accurate extension detection
-                    expected_original_url_after_ext_update = self._construct_nginx_public_url("original", base_art_filename_original_ext)
-                    if not hosted_original_art_url or hosted_original_art_url != expected_original_url_after_ext_update:
-                         hosted_original_art_url = self._host_image_to_nginx_webdav(current_original_art_bytes, "original", base_art_filename_original_ext)
+                    if not original_image_ext.startswith('.'): original_image_ext = '.' + original_image_ext
+                    base_art_filename_original_ext = f"{sanitized_card_name}_{set_code_sanitized}_{collector_number_sanitized}{original_image_ext}"
+                    expected_original_url_on_nginx = self._construct_nginx_public_url("original", base_art_filename_original_ext) # Update with correct ext
+
+                    # Host original from pipeline bytes if not already marked as hosted under the (potentially new) correct filename
+                    if not hosted_original_art_url or hosted_original_art_url != expected_original_url_on_nginx:
+                         hosted_original_art_url = self._host_image_to_nginx_webdav(original_art_bytes_for_pipeline, "original", base_art_filename_original_ext)
                     
-                    if hosted_original_art_url: # If original is now available on Nginx
-                        upscaled_image_bytes = self._upscale_image_with_ilaria(
-                            hosted_original_art_url, base_art_filename_original_ext, original_image_mime_type
-                        )
+                    if hosted_original_art_url: 
+                        upscaled_image_bytes = self._upscale_image_with_ilaria(hosted_original_art_url, base_art_filename_original_ext, original_image_mime_type)
                         if upscaled_image_bytes:
                             _, actual_upscaled_ext = self._get_image_mime_type_and_extension(upscaled_image_bytes)
                             if not actual_upscaled_ext: actual_upscaled_ext = upscaled_image_expected_ext_for_check 
                             if not actual_upscaled_ext.startswith('.'): actual_upscaled_ext = '.' + actual_upscaled_ext
-                            # UPDATED FILENAME FORMAT
                             upscaled_art_filename_to_save = f"{sanitized_card_name}_{set_code_sanitized}_{collector_number_sanitized}{actual_upscaled_ext}"
                             
-                            hosted_upscaled_art_url = self._host_image_to_nginx_webdav(
-                                upscaled_image_bytes, upscaler_model_sanitized, upscaled_art_filename_to_save
-                            )
-                            if hosted_upscaled_art_url: final_art_source_url = hosted_upscaled_art_url
-                            elif hosted_original_art_url: final_art_source_url = hosted_original_art_url # Fallback
-                        elif hosted_original_art_url: final_art_source_url = hosted_original_art_url # Upscaling failed
-                    else: # Original hosting failed
-                        final_art_source_url = scryfall_art_crop_url 
+                            hosted_upscaled_art_url = self._host_image_to_nginx_webdav(upscaled_image_bytes, upscaler_model_sanitized, upscaled_art_filename_to_save)
+                            if hosted_upscaled_art_url: 
+                                final_art_source_url = hosted_upscaled_art_url
+                                if self.upscaler_outscale_factor > 0:
+                                    art_zoom = art_zoom / self.upscaler_outscale_factor 
+                                    logger.info(f"Adjusted artZoom for newly upscaled image to: {art_zoom:.4f} (factor: {self.upscaler_outscale_factor})")
+                            elif hosted_original_art_url: final_art_source_url = hosted_original_art_url 
+                        elif hosted_original_art_url: final_art_source_url = hosted_original_art_url 
+                    else: 
+                        final_art_source_url = art_crop_url 
                 else: 
-                    logger.warning(f"Cannot upscale/host {base_art_filename_original_ext}: Original art content could not be obtained.")
-            elif self.upscale_art: # Upscale_art is true, but some other condition not met (e.g. already used existing upscaled, or server URLs missing)
-                 logger.warning(f"Upscaling/hosting skipped for {base_art_filename_original_ext}: Global requirements not met or upscaled version already used.")
+                    logger.warning(f"Cannot upscale/host {base_art_filename_original_ext}: Original art content could not be obtained for upscaling pipeline.")
         
-        # ... (Set Symbol, P/T, Title, Final Card Object construction as before) ...
         set_symbol_x = self.frame_config.get("set_symbol_x", 0.0); set_symbol_y = self.frame_config.get("set_symbol_y", 0.0); set_symbol_zoom = self.frame_config.get("set_symbol_zoom", 0.1)
-        rarity_from_scryfall = card_data.get('rarity', 'c')
-        rarity_code_for_symbol = RARITY_MAP.get(rarity_from_scryfall, rarity_from_scryfall)
-        set_code_for_symbol_url = self.set_symbol_override.lower() if self.set_symbol_override else set_code_from_scryfall.lower()
-        actual_set_code_for_url = set_code_for_symbol_url 
+        actual_set_code_for_url = self.set_symbol_override.lower() if self.set_symbol_override else set_code_from_scryfall.lower()
         set_symbol_source_url = f"{ccProto}://{ccHost}:{ccPort}/img/setSymbols/official/{actual_set_code_for_url}-{rarity_code_for_symbol}.svg"
         if self.auto_fit_set_symbol and set_symbol_source_url:
             auto_fit_symbol_params_result = self._calculate_auto_fit_set_symbol_params(set_symbol_source_url)
@@ -689,8 +698,7 @@ class CardBuilder:
                 elif status == "calculation_issue_default_fallback": logger.warning(f"Auto-fit for set symbol {set_symbol_source_url} resulted in fallback.")
             else: logger.warning(f"Auto-fit set symbol calculation returned None for {set_symbol_source_url}.")
 
-        power_val = card_data.get('power', ''); toughness_val = card_data.get('toughness', '')
-        pt_text_final = ""
+        power_val = card_data.get('power', ''); toughness_val = card_data.get('toughness', ''); pt_text_final = ""
         if 'power' in card_data and 'toughness' in card_data:
             if self.frame_type == "8th":
                 replacement_asterisk = "X" 
@@ -699,14 +707,15 @@ class CardBuilder:
             pt_text_final = f"{power_val}/{toughness_val}"
         
         display_title_text = basic_land_type_override if is_basic_land_fetch_mode and basic_land_type_override else scryfall_card_name
-
+        
         card_obj_data = {
             "width": self.frame_config["width"], "height": self.frame_config["height"],
             "marginX": self.frame_config.get("margin_x", 0), "marginY": self.frame_config.get("margin_y", 0),
             "frames": frames_for_card_obj, 
             "artSource": final_art_source_url, 
-            "artX": art_x, "artY": art_y, "artZoom": art_zoom, "artRotate": art_rotate,
-            "artSourceOriginalScryfall": scryfall_art_crop_url, 
+            "artX": art_x, "artY": art_y, "artZoom": art_zoom, 
+            "artRotate": art_rotate,
+            "artSourceOriginalScryfall": art_crop_url, 
             **({"artSourceHostedOriginal": hosted_original_art_url} if hosted_original_art_url else {}),
             **({"artSourceHostedUpscaled": hosted_upscaled_art_url} if hosted_upscaled_art_url and hosted_upscaled_art_url != final_art_source_url else {}),
             "setSymbolSource": set_symbol_source_url, "setSymbolX":set_symbol_x, "setSymbolY": set_symbol_y, "setSymbolZoom": set_symbol_zoom,
@@ -714,7 +723,8 @@ class CardBuilder:
             "watermarkX": self.frame_config["watermark_x"], "watermarkY": self.frame_config["watermark_y"], "watermarkZoom": self.frame_config["watermark_zoom"], 
             "watermarkLeft": self.frame_config["watermark_left"], "watermarkRight": self.frame_config["watermark_right"], "watermarkOpacity": self.frame_config["watermark_opacity"],
             "version": self.frame_config.get("version_string", self.frame_type), 
-            "showsFlavorBar": shows_flavor_bar_for_this_card, "manaSymbols": mana_symbols,
+            "showsFlavorBar": shows_flavor_bar_for_this_card, 
+            "manaSymbols": mana_symbols,
             "infoYear": DEFAULT_INFO_YEAR, "margins": self.frame_config.get("margins", False),
             "bottomInfoTranslate": self.frame_config.get("bottomInfoTranslate", {"x": 0, "y": 0}), "bottomInfoRotate": self.frame_config.get("bottomInfoRotate", 0),
             "bottomInfoZoom": self.frame_config.get("bottomInfoZoom", 1), "bottomInfoColor": self.frame_config.get("bottomInfoColor", "white"),
