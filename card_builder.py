@@ -549,9 +549,10 @@ class CardBuilder:
 
         art_x = self.frame_config.get("art_x", 0.0); art_y = self.frame_config.get("art_y", 0.0)
         art_zoom = self.frame_config.get("art_zoom", 1.0); art_rotate = self.frame_config.get("art_rotate", "0")
-        original_image_content = None
-        original_image_mime_type: Optional[str] = None
-        original_image_ext = ".jpg" # Default extension for original
+        
+        original_art_bytes_for_processing = None 
+        original_image_mime_type: Optional[str] = None 
+        original_image_ext = ".jpg" 
 
         if scryfall_art_crop_url:
             sanitized_card_name = sanitize_for_filename(scryfall_card_name)
@@ -565,84 +566,114 @@ class CardBuilder:
                     original_image_ext = ext_from_url.lower()
             except Exception: pass
 
-            needs_fetch = self.auto_fit_art or (self.upscale_art and self.image_server_base_url and self.ilaria_upscaler_base_url)
-            if needs_fetch:
-                try:
-                    logger.debug(f"Fetching art from {scryfall_art_crop_url} for {sanitized_card_name}_{set_code_sanitized}_{collector_number_sanitized}.")
-                    response = requests.get(scryfall_art_crop_url, timeout=10); response.raise_for_status()
-                    if self.api_delay_seconds > 0 and (not hasattr(response, 'from_cache') or response.from_cache is False if hasattr(response, 'from_cache') else True): time.sleep(self.api_delay_seconds)
-                    original_image_content = response.content
-                    original_image_mime_type, determined_ext = self._get_image_mime_type_and_extension(original_image_content)
-                    if determined_ext: original_image_ext = determined_ext 
-                except Exception as e: logger.error(f"Failed to fetch art from {scryfall_art_crop_url}: {e}", exc_info=True)
+            # This variable will hold bytes of the original art, whether from Scryfall or Nginx
+            # It's used for auto-fit AND as the source for upscaling (by uploading to Nginx first if not already there)
+            current_original_art_bytes = None 
 
+            # Phase 1: Determine filename and check for existing files
             if not original_image_ext.startswith('.'): original_image_ext = '.' + original_image_ext
+            # UPDATED FILENAME FORMAT
             base_art_filename_original_ext = f"{sanitized_card_name}_{set_code_sanitized}_{collector_number_sanitized}{original_image_ext}"
             
-            expected_original_url = self._construct_nginx_public_url("original", base_art_filename_original_ext)
+            expected_original_url_on_nginx = self._construct_nginx_public_url("original", base_art_filename_original_ext)
             upscaler_model_sanitized = sanitize_for_filename(self.upscaler_model_name)
             
-            upscaled_image_expected_ext = ".png" 
-            base_art_filename_upscaled_check = f"{sanitized_card_name}_{set_code_sanitized}_{collector_number_sanitized}{upscaled_image_expected_ext}"
-            expected_upscaled_url = self._construct_nginx_public_url(upscaler_model_sanitized, base_art_filename_upscaled_check)
+            upscaled_image_expected_ext_for_check = ".png" 
+            # UPDATED FILENAME FORMAT
+            base_art_filename_upscaled_check = f"{sanitized_card_name}_{set_code_sanitized}_{collector_number_sanitized}{upscaled_image_expected_ext_for_check}"
+            expected_upscaled_url_on_nginx = self._construct_nginx_public_url(upscaler_model_sanitized, base_art_filename_upscaled_check)
             
             used_existing_upscaled = False
 
+            # Check if upscaled version already exists on Nginx
             if self.upscale_art and self.image_server_base_url and self.ilaria_upscaler_base_url:
-                if expected_upscaled_url and self._check_if_file_exists_on_server(expected_upscaled_url):
-                    logger.info(f"Upscaled art '{base_art_filename_upscaled_check}' for model '{upscaler_model_sanitized}' already on Nginx.")
-                    hosted_upscaled_art_url = expected_upscaled_url
+                if expected_upscaled_url_on_nginx and self._check_if_file_exists_on_server(expected_upscaled_url_on_nginx):
+                    logger.info(f"Upscaled art '{base_art_filename_upscaled_check}' already on Nginx.")
+                    hosted_upscaled_art_url = expected_upscaled_url_on_nginx
                     final_art_source_url = hosted_upscaled_art_url
                     used_existing_upscaled = True
-                    if expected_original_url and self._check_if_file_exists_on_server(expected_original_url):
-                        hosted_original_art_url = expected_original_url
-                
-                if not used_existing_upscaled:
-                    # Ensure original_image_content is available if we need to process/upload
-                    if not original_image_content and needs_fetch: # Re-fetch if it wasn't fetched or failed
-                        logger.warning(f"Original content for {base_art_filename_original_ext} not available for upscaling, attempting fetch again (or from existing Nginx original).")
-                        if expected_original_url and self._check_if_file_exists_on_server(expected_original_url):
-                            try:
-                                logger.debug(f"Fetching existing original art from Nginx: {expected_original_url}")
-                                response = requests.get(expected_original_url, timeout=10); response.raise_for_status()
-                                original_image_content = response.content
-                                original_image_mime_type, _ = self._get_image_mime_type_and_extension(original_image_content) # update mime if fetched from Nginx
-                                hosted_original_art_url = expected_original_url # Confirm it
-                            except Exception as e: logger.error(f"Failed to fetch existing original from Nginx: {e}")
-                        elif scryfall_art_crop_url: # If not on Nginx, try Scryfall again
-                             try:
-                                response = requests.get(scryfall_art_crop_url, timeout=10); response.raise_for_status()
-                                original_image_content = response.content
-                                original_image_mime_type, _ = self._get_image_mime_type_and_extension(original_image_content)
-                             except Exception as e: logger.error(f"Re-fetch from Scryfall failed for {scryfall_art_crop_url}: {e}")
-                    
-                    if original_image_content:
-                        if not hosted_original_art_url: # If not found or set from existing check
-                             hosted_original_art_url = self._host_image_to_nginx_webdav(original_image_content, "original", base_art_filename_original_ext)
-                        
-                        if hosted_original_art_url:
-                            upscaled_image_bytes = self._upscale_image_with_ilaria(hosted_original_art_url, base_art_filename_original_ext, original_image_mime_type)
-                            if upscaled_image_bytes:
-                                _, actual_upscaled_ext = self._get_image_mime_type_and_extension(upscaled_image_bytes)
-                                if not actual_upscaled_ext: actual_upscaled_ext = upscaled_image_expected_ext 
-                                if not actual_upscaled_ext.startswith('.'): actual_upscaled_ext = '.' + actual_upscaled_ext
-                                upscaled_art_filename_to_save = f"{sanitized_card_name}_{set_code_sanitized}_{collector_number_sanitized}{actual_upscaled_ext}"
-                                hosted_upscaled_art_url = self._host_image_to_nginx_webdav(upscaled_image_bytes, upscaler_model_sanitized, upscaled_art_filename_to_save)
-                                if hosted_upscaled_art_url: final_art_source_url = hosted_upscaled_art_url
-                                elif hosted_original_art_url: final_art_source_url = hosted_original_art_url
-                            elif hosted_original_art_url: final_art_source_url = hosted_original_art_url
-                        else: final_art_source_url = scryfall_art_crop_url 
-                    else: logger.warning(f"Cannot upscale/host {base_art_filename_original_ext}: Original image content not available after checks/fetches.")
-            elif self.upscale_art:
-                 logger.warning(f"Upscaling/hosting skipped for {base_art_filename_original_ext}: Global requirements for upscaling not met.")
+                    # If upscaled exists, also record if original exists for completeness
+                    if not hosted_original_art_url and expected_original_url_on_nginx and self._check_if_file_exists_on_server(expected_original_url_on_nginx):
+                        hosted_original_art_url = expected_original_url_on_nginx
 
+            # Phase 2: If not using an existing upscaled image, prepare original art for auto-fit and/or upscaling
+            if not used_existing_upscaled and (self.auto_fit_art or (self.upscale_art and self.image_server_base_url and self.ilaria_upscaler_base_url) ):
+                # Try to get original art bytes:
+                # 1. From Nginx if it exists there
+                if expected_original_url_on_nginx and self._check_if_file_exists_on_server(expected_original_url_on_nginx):
+                    try:
+                        logger.debug(f"Fetching existing original art from Nginx for processing: {expected_original_url_on_nginx}")
+                        response = requests.get(expected_original_url_on_nginx, timeout=10); response.raise_for_status()
+                        current_original_art_bytes = response.content
+                        original_image_mime_type, det_ext = self._get_image_mime_type_and_extension(current_original_art_bytes)
+                        if det_ext: original_image_ext = det_ext # Update extension if needed
+                        if not original_image_ext.startswith('.'): original_image_ext = '.' + original_image_ext
+                        # Reconstruct filename with potentially more accurate extension
+                        base_art_filename_original_ext = f"{sanitized_card_name}_{set_code_sanitized}_{collector_number_sanitized}{original_image_ext}"
+                        hosted_original_art_url = expected_original_url_on_nginx # It's confirmed hosted
+                    except Exception as e: 
+                        logger.error(f"Failed to fetch existing original from Nginx ({expected_original_url_on_nginx}): {e}. Will try Scryfall if URL available.")
+                        current_original_art_bytes = None 
+                
+                # 2. If not on Nginx (or Nginx fetch failed), get from Scryfall
+                if not current_original_art_bytes and scryfall_art_crop_url:
+                    try:
+                        logger.debug(f"Fetching original art from Scryfall: {scryfall_art_crop_url}")
+                        response = requests.get(scryfall_art_crop_url, timeout=10); response.raise_for_status()
+                        if self.api_delay_seconds > 0 and (not hasattr(response, 'from_cache') or response.from_cache is False if hasattr(response, 'from_cache') else True): time.sleep(self.api_delay_seconds)
+                        current_original_art_bytes = response.content
+                        original_image_mime_type, det_ext = self._get_image_mime_type_and_extension(current_original_art_bytes)
+                        if det_ext: original_image_ext = det_ext
+                        if not original_image_ext.startswith('.'): original_image_ext = '.' + original_image_ext
+                        base_art_filename_original_ext = f"{sanitized_card_name}_{set_code_sanitized}_{collector_number_sanitized}{original_image_ext}"
+                        # Note: hosted_original_art_url will be set if this content is successfully PUT to Nginx later
+                    except Exception as e: logger.error(f"Failed to fetch art from Scryfall for {scryfall_art_crop_url}: {e}", exc_info=True)
+
+            # Phase 3: Auto-fit (uses current_original_art_bytes if available)
             if self.auto_fit_art and not used_existing_upscaled:
-                auto_fit_params = None
-                if original_image_content: auto_fit_params = self._calculate_auto_fit_art_params_from_data(original_image_content, scryfall_art_crop_url)
-                elif scryfall_art_crop_url: auto_fit_params = self._calculate_auto_fit_art_params(scryfall_art_crop_url)
-                if auto_fit_params: art_x, art_y, art_zoom = auto_fit_params["artX"], auto_fit_params["artY"], auto_fit_params["artZoom"]
-                else: logger.warning(f"Auto-fit failed for {base_art_filename_original_ext}.")
+                if current_original_art_bytes:
+                    # The "art_url_for_logging" for _from_data can be the scryfall_url or nginx_url depending on where bytes came from
+                    source_log_url = hosted_original_art_url if hosted_original_art_url else scryfall_art_crop_url
+                    auto_fit_params = self._calculate_auto_fit_art_params_from_data(current_original_art_bytes, source_log_url)
+                    if auto_fit_params: art_x, art_y, art_zoom = auto_fit_params["artX"], auto_fit_params["artY"], auto_fit_params["artZoom"]
+                    else: logger.warning(f"Auto-fit calculation failed for {base_art_filename_original_ext}.")
+                else:
+                    logger.warning(f"Auto-fit skipped for {base_art_filename_original_ext}: original art content not available.")
+
+            # Phase 4: Upscaling and Hosting (if not used_existing_upscaled and relevant flags are on)
+            if self.upscale_art and not used_existing_upscaled and self.image_server_base_url and self.ilaria_upscaler_base_url:
+                if current_original_art_bytes:
+                    # Host original to Nginx if not already marked as hosted (it might have been found in Phase 2 but content refetched)
+                    # or if its filename changed due to more accurate extension detection
+                    expected_original_url_after_ext_update = self._construct_nginx_public_url("original", base_art_filename_original_ext)
+                    if not hosted_original_art_url or hosted_original_art_url != expected_original_url_after_ext_update:
+                         hosted_original_art_url = self._host_image_to_nginx_webdav(current_original_art_bytes, "original", base_art_filename_original_ext)
+                    
+                    if hosted_original_art_url: # If original is now available on Nginx
+                        upscaled_image_bytes = self._upscale_image_with_ilaria(
+                            hosted_original_art_url, base_art_filename_original_ext, original_image_mime_type
+                        )
+                        if upscaled_image_bytes:
+                            _, actual_upscaled_ext = self._get_image_mime_type_and_extension(upscaled_image_bytes)
+                            if not actual_upscaled_ext: actual_upscaled_ext = upscaled_image_expected_ext_for_check 
+                            if not actual_upscaled_ext.startswith('.'): actual_upscaled_ext = '.' + actual_upscaled_ext
+                            # UPDATED FILENAME FORMAT
+                            upscaled_art_filename_to_save = f"{sanitized_card_name}_{set_code_sanitized}_{collector_number_sanitized}{actual_upscaled_ext}"
+                            
+                            hosted_upscaled_art_url = self._host_image_to_nginx_webdav(
+                                upscaled_image_bytes, upscaler_model_sanitized, upscaled_art_filename_to_save
+                            )
+                            if hosted_upscaled_art_url: final_art_source_url = hosted_upscaled_art_url
+                            elif hosted_original_art_url: final_art_source_url = hosted_original_art_url # Fallback
+                        elif hosted_original_art_url: final_art_source_url = hosted_original_art_url # Upscaling failed
+                    else: # Original hosting failed
+                        final_art_source_url = scryfall_art_crop_url 
+                else: 
+                    logger.warning(f"Cannot upscale/host {base_art_filename_original_ext}: Original art content could not be obtained.")
+            elif self.upscale_art: # Upscale_art is true, but some other condition not met (e.g. already used existing upscaled, or server URLs missing)
+                 logger.warning(f"Upscaling/hosting skipped for {base_art_filename_original_ext}: Global requirements not met or upscaled version already used.")
         
+        # ... (Set Symbol, P/T, Title, Final Card Object construction as before) ...
         set_symbol_x = self.frame_config.get("set_symbol_x", 0.0); set_symbol_y = self.frame_config.get("set_symbol_y", 0.0); set_symbol_zoom = self.frame_config.get("set_symbol_zoom", 0.1)
         rarity_from_scryfall = card_data.get('rarity', 'c')
         rarity_code_for_symbol = RARITY_MAP.get(rarity_from_scryfall, rarity_from_scryfall)
