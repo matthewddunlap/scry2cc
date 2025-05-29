@@ -578,114 +578,218 @@ class CardBuilder:
             for face in card_data['card_faces']:
                 if 'image_uris' in face and 'art_crop' in face['image_uris']: 
                     art_crop_url = face['image_uris']['art_crop']; break
-        
-        art_x = self.frame_config.get("art_x", 0.0); art_y = self.frame_config.get("art_y", 0.0)
-        art_zoom = self.frame_config.get("art_zoom", 1.0); art_rotate = self.frame_config.get("art_rotate", "0")
-        
-        final_art_source_url = art_crop_url 
-        hosted_original_art_url = None
-        hosted_upscaled_art_url = None
-        
-        # This will hold the bytes of the ORIGINAL art, prioritized: Nginx -> Scryfall
-        # Used as the source for upscaling pipeline if needed. Auto-fit uses its own Scryfall fetch.
-        original_art_bytes_for_pipeline: Optional[bytes] = None 
-        original_image_mime_type: Optional[str] = None 
-        original_image_ext = ".jpg" # Default
 
-        # Phase 1: Auto-fit Art (if enabled, ALWAYS fetches from Scryfall for this calculation)
+        # --- (initializations as before for card name, set, etc.) ---
+        
+        # Art-related initializations
+        art_x = self.frame_config.get("art_x", 0.0)
+        art_y = self.frame_config.get("art_y", 0.0)
+        art_zoom = self.frame_config.get("art_zoom", 1.0)
+        art_rotate = self.frame_config.get("art_rotate", "0")
+        
+        final_art_source_url = art_crop_url # Default, may be overridden
+        hosted_original_art_url: Optional[str] = None
+        hosted_upscaled_art_url: Optional[str] = None
+        original_art_bytes_for_pipeline: Optional[bytes] = None
+        original_image_mime_type: Optional[str] = None
+        
+        # Determine initial best guess for original image extension from Scryfall URL
+        # This will be updated if actual content is fetched and reveals a different extension.
+        _, initial_ext_guess = os.path.splitext(art_crop_url.split('?')[0])
+        if not initial_ext_guess or initial_ext_guess.lower() not in ['.jpg', '.jpeg', '.png', '.gif', '.webp']:
+            initial_ext_guess = ".jpg" # Default fallback extension
+        original_image_actual_ext: str = initial_ext_guess.lower()
+        
+        sanitized_card_name = sanitize_for_filename(scryfall_card_name)
+        set_code_sanitized = sanitize_for_filename(set_code_from_scryfall)
+        collector_number_sanitized = sanitize_for_filename(collector_number_from_scryfall)
+        
+        # --- 1. Auto-Fit Art (if enabled) ---
         if self.auto_fit_art and art_crop_url:
-            logger.info(f"Performing auto-fit art for {art_crop_url}")
-            auto_fit_params = self._calculate_auto_fit_art_params(art_crop_url) 
-            if auto_fit_params: 
-                art_x, art_y, art_zoom = auto_fit_params["artX"], auto_fit_params["artY"], auto_fit_params["artZoom"]
-                logger.info(f"Auto-fit art params applied for {scryfall_card_name}: X={art_x:.4f}, Y={art_y:.4f}, Zoom={art_zoom:.4f}")
-            else:
-                logger.warning(f"Auto-fit art calculation failed for {art_crop_url}. Using default art parameters from config.")
+            logger.info(f"Auto-Fit: Starting for '{scryfall_card_name}' (Scryfall art URL: {art_crop_url})")
+            art_source_for_dims_log = art_crop_url # For logging where bytes came from
         
-        # Phase 2: Upscaling and Hosting Logic
+            # A. Try to get original art bytes from Nginx for auto-fit
+            if self.image_server_base_url:
+                # Check with current best guess for extension, then try others if not found
+                possible_extensions = [original_image_actual_ext] + [ext for ext in ['.jpg', '.png', '.jpeg', '.webp', '.gif'] if ext != original_image_actual_ext]
+                for ext_try in possible_extensions:
+                    base_filename_nginx_check = f"{sanitized_card_name}_{set_code_sanitized}_{collector_number_sanitized}{ext_try}"
+                    potential_nginx_url = self._construct_nginx_public_url("original", base_filename_nginx_check)
+                    if self._check_if_file_exists_on_server(potential_nginx_url):
+                        logger.info(f"Auto-Fit: Found '{base_filename_nginx_check}' on Nginx. Fetching for dimensions.")
+                        temp_bytes = self._fetch_image_bytes(potential_nginx_url, "Nginx original for auto-fit")
+                        if temp_bytes:
+                            original_art_bytes_for_pipeline = temp_bytes
+                            hosted_original_art_url = potential_nginx_url
+                            art_source_for_dims_log = potential_nginx_url
+                            # Update actual extension and mime from the fetched Nginx content
+                            mime, ext_from_content = self._get_image_mime_type_and_extension(original_art_bytes_for_pipeline)
+                            if ext_from_content: original_image_actual_ext = ext_from_content
+                            else: original_image_actual_ext = ext_try # Fallback to the extension that worked for HEAD
+                            if mime: original_image_mime_type = mime
+                            break # Found and fetched from Nginx
+                        else:
+                            logger.warning(f"Auto-Fit: Failed to fetch from Nginx {potential_nginx_url} despite HEAD check. Will try Scryfall if no other extension works.")
+                    # else: not found with this extension, loop continues
+                
+            # B. If not found on Nginx, fetch from Scryfall for auto-fit
+            if not original_art_bytes_for_pipeline and art_crop_url:
+                logger.info(f"Auto-Fit: Fetching from Scryfall ({art_crop_url}) for dimensions.")
+                temp_bytes = self._fetch_image_bytes(art_crop_url, "Scryfall original for auto-fit")
+                if temp_bytes:
+                    original_art_bytes_for_pipeline = temp_bytes
+                    art_source_for_dims_log = f"Scryfall ({art_crop_url})"
+                    # Update actual extension and mime from Scryfall content
+                    mime, ext_from_content = self._get_image_mime_type_and_extension(original_art_bytes_for_pipeline)
+                    if ext_from_content: original_image_actual_ext = ext_from_content
+                    # original_image_mime_type will be set if ext_from_content is valid
+                    if mime: original_image_mime_type = mime
+                    
+                    # C. If fetched from Scryfall and Nginx is configured, host it
+                    if self.image_server_base_url:
+                        # Use the now determined original_image_actual_ext for the filename
+                        filename_to_host = f"{sanitized_card_name}_{set_code_sanitized}_{collector_number_sanitized}{original_image_actual_ext}"
+                        # Check if this correctly-named file ALREADY exists (e.g. from a previous run that guessed ext wrong initially but hosted correctly)
+                        already_hosted_url = self._construct_nginx_public_url("original", filename_to_host)
+                        if self._check_if_file_exists_on_server(already_hosted_url):
+                            hosted_original_art_url = already_hosted_url # Already there with the correct name
+                            logger.info(f"Auto-Fit: Scryfall-fetched art ({filename_to_host}) is already on Nginx. Using existing.")
+                        else:
+                            logger.info(f"Auto-Fit: Hosting Scryfall-fetched art '{filename_to_host}' to Nginx.")
+                            temp_hosted_url = self._host_image_to_nginx_webdav(original_art_bytes_for_pipeline, "original", filename_to_host)
+                            if temp_hosted_url:
+                                hosted_original_art_url = temp_hosted_url
+                            else:
+                                logger.warning(f"Auto-Fit: Failed to host Scryfall-fetched art '{filename_to_host}' to Nginx.")
+                else:
+                    logger.warning(f"Auto-Fit: Failed to fetch art from Scryfall ({art_crop_url}) for dimensions.")
+        
+            # D. Calculate auto-fit parameters if bytes were obtained
+            if original_art_bytes_for_pipeline:
+                auto_fit_params = self._calculate_auto_fit_art_params_from_data(original_art_bytes_for_pipeline, art_source_for_dims_log)
+                if auto_fit_params:
+                    art_x, art_y, art_zoom = auto_fit_params["artX"], auto_fit_params["artY"], auto_fit_params["artZoom"]
+                    logger.info(f"Auto-Fit: Parameters applied for {scryfall_card_name} (from {art_source_for_dims_log}): X={art_x:.4f}, Y={art_y:.4f}, Zoom={art_zoom:.4f}")
+                else:
+                    logger.warning(f"Auto-Fit: Calculation failed using bytes from {art_source_for_dims_log}. Using default art parameters from config.")
+            else:
+                logger.warning(f"Auto-Fit: No art bytes obtained for {scryfall_card_name}. Using default art parameters from config.")
+        
+        # --- 2. Upscaling and Final Art Source Determination ---
         if self.upscale_art and art_crop_url and self.image_server_base_url and self.ilaria_upscaler_base_url:
-            sanitized_card_name = sanitize_for_filename(scryfall_card_name)
-            set_code_sanitized = sanitize_for_filename(set_code_from_scryfall)
-            collector_number_sanitized = sanitize_for_filename(collector_number_from_scryfall)
-            
-            try: # Initial extension from URL
-                url_path_no_query = art_crop_url.split('?')[0]
-                _, ext_from_url = os.path.splitext(url_path_no_query)
-                if ext_from_url and ext_from_url.lower() in ['.jpg', '.jpeg', '.png', '.gif', '.webp']:
-                    original_image_ext = ext_from_url.lower()
-            except Exception: pass
-
-            if not original_image_ext.startswith('.'): original_image_ext = '.' + original_image_ext
-            base_art_filename_original_ext = f"{sanitized_card_name}_{set_code_sanitized}_{collector_number_sanitized}{original_image_ext}"
-            expected_original_url_on_nginx = self._construct_nginx_public_url("original", base_art_filename_original_ext)
-            
             upscaler_model_sanitized = sanitize_for_filename(self.upscaler_model_name)
-            upscaled_image_expected_ext_for_check = ".png" 
-            base_art_filename_upscaled_check = f"{sanitized_card_name}_{set_code_sanitized}_{collector_number_sanitized}{upscaled_image_expected_ext_for_check}"
+            # RealESRGAN typically outputs PNG, but we verify after generation
+            upscaled_image_check_ext = ".png" 
+            base_art_filename_upscaled_check = f"{sanitized_card_name}_{set_code_sanitized}_{collector_number_sanitized}{upscaled_image_check_ext}"
             expected_upscaled_url_on_nginx = self._construct_nginx_public_url(upscaler_model_sanitized, base_art_filename_upscaled_check)
             
             used_existing_upscaled = False
-
-            if expected_upscaled_url_on_nginx and self._check_if_file_exists_on_server(expected_upscaled_url_on_nginx):
-                logger.info(f"Upscaled art '{base_art_filename_upscaled_check}' already on Nginx.")
+            # A. Check if upscaled version already exists on Nginx
+            if self._check_if_file_exists_on_server(expected_upscaled_url_on_nginx):
+                logger.info(f"Upscaling: Found existing upscaled art '{base_art_filename_upscaled_check}' on Nginx.")
                 hosted_upscaled_art_url = expected_upscaled_url_on_nginx
                 final_art_source_url = hosted_upscaled_art_url
-                used_existing_upscaled = True 
-                # Adjust zoom for existing upscaled image
+                used_existing_upscaled = True
                 if self.upscaler_outscale_factor > 0:
-                    art_zoom = art_zoom / self.upscaler_outscale_factor 
-                    logger.info(f"Adjusted artZoom for existing upscaled image to: {art_zoom:.4f} (factor: {self.upscaler_outscale_factor})")
-                if not hosted_original_art_url and expected_original_url_on_nginx and self._check_if_file_exists_on_server(expected_original_url_on_nginx):
-                    hosted_original_art_url = expected_original_url_on_nginx
-            
-            if not used_existing_upscaled:
-                # Fetch original art bytes for the pipeline (if not already fetched or if needed)
-                # Try Nginx first for the pipeline if it exists
-                if expected_original_url_on_nginx and self._check_if_file_exists_on_server(expected_original_url_on_nginx):
-                    logger.debug(f"Original art found on Nginx: {expected_original_url_on_nginx}. Fetching for pipeline.")
-                    original_art_bytes_for_pipeline = self._fetch_image_bytes(expected_original_url_on_nginx, "Nginx original for pipeline")
-                    if original_art_bytes_for_pipeline:
-                         hosted_original_art_url = expected_original_url_on_nginx # Already hosted
+                    art_zoom = art_zoom / self.upscaler_outscale_factor
+                    logger.info(f"Upscaling: Adjusted artZoom for existing upscaled image to: {art_zoom:.4f} (factor: {self.upscaler_outscale_factor})")
                 
-                if not original_art_bytes_for_pipeline: # If not on Nginx or Nginx fetch failed
-                    logger.debug(f"Original art not found/fetched from Nginx. Fetching from Scryfall for pipeline: {art_crop_url}")
-                    original_art_bytes_for_pipeline = self._fetch_image_bytes(art_crop_url, "Scryfall original for pipeline")
-
-                # If we have bytes, determine their actual mime and ext for filename accuracy
-                if original_art_bytes_for_pipeline:
-                    current_mime, current_ext = self._get_image_mime_type_and_extension(original_art_bytes_for_pipeline)
-                    if current_ext: original_image_ext = current_ext
-                    if original_image_mime_type is None : original_image_mime_type = current_mime # Set if not already set by Scryfall fetch specifically for pipeline
-
-                    if not original_image_ext.startswith('.'): original_image_ext = '.' + original_image_ext
-                    base_art_filename_original_ext = f"{sanitized_card_name}_{set_code_sanitized}_{collector_number_sanitized}{original_image_ext}"
-                    expected_original_url_on_nginx = self._construct_nginx_public_url("original", base_art_filename_original_ext) # Update with correct ext
-
-                    # Host original from pipeline bytes if not already marked as hosted under the (potentially new) correct filename
-                    if not hosted_original_art_url or hosted_original_art_url != expected_original_url_on_nginx:
-                         hosted_original_art_url = self._host_image_to_nginx_webdav(original_art_bytes_for_pipeline, "original", base_art_filename_original_ext)
-                    
-                    if hosted_original_art_url: 
-                        upscaled_image_bytes = self._upscale_image_with_ilaria(hosted_original_art_url, base_art_filename_original_ext, original_image_mime_type)
+                # If we used existing upscaled, ensure hosted_original_art_url is also known if original exists on Nginx
+                # (original_image_actual_ext should be correct if auto-fit ran and got bytes)
+                if not hosted_original_art_url: 
+                    original_filename_check = f"{sanitized_card_name}_{set_code_sanitized}_{collector_number_sanitized}{original_image_actual_ext}"
+                    potential_original_nginx_url = self._construct_nginx_public_url("original", original_filename_check)
+                    if self._check_if_file_exists_on_server(potential_original_nginx_url):
+                        hosted_original_art_url = potential_original_nginx_url
+        
+            # B. If not using existing upscaled, proceed with upscaling pipeline
+            if not used_existing_upscaled:
+                # B1. Ensure original art bytes are available (if auto-fit was off or failed to get them)
+                if not original_art_bytes_for_pipeline:
+                    logger.info(f"Upscaling: Original art bytes not available from auto-fit step. Fetching now.")
+                    # Try Nginx first (similar logic to auto-fit's Nginx check)
+                    if self.image_server_base_url:
+                        possible_extensions = [original_image_actual_ext] + [ext for ext in ['.jpg', '.png', '.jpeg', '.webp', '.gif'] if ext != original_image_actual_ext]
+                        for ext_try in possible_extensions:
+                            base_filename_nginx_check = f"{sanitized_card_name}_{set_code_sanitized}_{collector_number_sanitized}{ext_try}"
+                            potential_nginx_url = self._construct_nginx_public_url("original", base_filename_nginx_check)
+                            if self._check_if_file_exists_on_server(potential_nginx_url):
+                                temp_bytes = self._fetch_image_bytes(potential_nginx_url, "Nginx original for upscaling pipeline")
+                                if temp_bytes:
+                                    original_art_bytes_for_pipeline = temp_bytes
+                                    hosted_original_art_url = potential_nginx_url
+                                    mime, ext_from_content = self._get_image_mime_type_and_extension(original_art_bytes_for_pipeline)
+                                    if ext_from_content: original_image_actual_ext = ext_from_content
+                                    else: original_image_actual_ext = ext_try
+                                    if mime: original_image_mime_type = mime
+                                    break # Found and fetched
+                    # If not from Nginx, try Scryfall
+                    if not original_art_bytes_for_pipeline and art_crop_url:
+                        temp_bytes = self._fetch_image_bytes(art_crop_url, "Scryfall original for upscaling pipeline")
+                        if temp_bytes:
+                            original_art_bytes_for_pipeline = temp_bytes
+                            mime, ext_from_content = self._get_image_mime_type_and_extension(original_art_bytes_for_pipeline)
+                            if ext_from_content: original_image_actual_ext = ext_from_content
+                            if mime: original_image_mime_type = mime
+                
+                # B2. Ensure original art is hosted on Nginx if bytes are available and Nginx is configured
+                if original_art_bytes_for_pipeline and self.image_server_base_url and not hosted_original_art_url:
+                    filename_to_host = f"{sanitized_card_name}_{set_code_sanitized}_{collector_number_sanitized}{original_image_actual_ext}"
+                    already_hosted_url = self._construct_nginx_public_url("original", filename_to_host)
+                    if self._check_if_file_exists_on_server(already_hosted_url):
+                         hosted_original_art_url = already_hosted_url
+                    else:
+                        logger.info(f"Upscaling: Hosting original art '{filename_to_host}' to Nginx for upscaling pipeline.")
+                        temp_hosted_url = self._host_image_to_nginx_webdav(original_art_bytes_for_pipeline, "original", filename_to_host)
+                        if temp_hosted_url: hosted_original_art_url = temp_hosted_url
+                
+                # B3. Perform upscaling if original is hosted
+                if hosted_original_art_url:
+                    # Ensure mime type is known for Ilaria (should be if bytes were processed)
+                    if not original_image_mime_type and original_art_bytes_for_pipeline:
+                         original_image_mime_type, _ = self._get_image_mime_type_and_extension(original_art_bytes_for_pipeline)
+        
+                    if original_image_mime_type: # Ilaria API requires mime_type in its payload
+                        filename_of_hosted_original = hosted_original_art_url.split('/')[-1] # For Ilaria's 'orig_name'
+                        upscaled_image_bytes = self._upscale_image_with_ilaria(hosted_original_art_url, filename_of_hosted_original, original_image_mime_type)
                         if upscaled_image_bytes:
                             _, actual_upscaled_ext = self._get_image_mime_type_and_extension(upscaled_image_bytes)
-                            if not actual_upscaled_ext: actual_upscaled_ext = upscaled_image_expected_ext_for_check 
+                            if not actual_upscaled_ext: actual_upscaled_ext = upscaled_image_check_ext # Default if detection fails
                             if not actual_upscaled_ext.startswith('.'): actual_upscaled_ext = '.' + actual_upscaled_ext
                             upscaled_art_filename_to_save = f"{sanitized_card_name}_{set_code_sanitized}_{collector_number_sanitized}{actual_upscaled_ext}"
                             
-                            hosted_upscaled_art_url = self._host_image_to_nginx_webdav(upscaled_image_bytes, upscaler_model_sanitized, upscaled_art_filename_to_save)
-                            if hosted_upscaled_art_url: 
+                            logger.info(f"Upscaling: Hosting upscaled art '{upscaled_art_filename_to_save}' to Nginx.")
+                            temp_hosted_upscaled_url = self._host_image_to_nginx_webdav(upscaled_image_bytes, upscaler_model_sanitized, upscaled_art_filename_to_save)
+                            if temp_hosted_upscaled_url:
+                                hosted_upscaled_art_url = temp_hosted_upscaled_url
                                 final_art_source_url = hosted_upscaled_art_url
                                 if self.upscaler_outscale_factor > 0:
-                                    art_zoom = art_zoom / self.upscaler_outscale_factor 
-                                    logger.info(f"Adjusted artZoom for newly upscaled image to: {art_zoom:.4f} (factor: {self.upscaler_outscale_factor})")
-                            elif hosted_original_art_url: final_art_source_url = hosted_original_art_url 
-                        elif hosted_original_art_url: final_art_source_url = hosted_original_art_url 
-                    else: 
-                        final_art_source_url = art_crop_url 
-                else: 
-                    logger.warning(f"Cannot upscale/host {base_art_filename_original_ext}: Original art content could not be obtained for upscaling pipeline.")
+                                    art_zoom = art_zoom / self.upscaler_outscale_factor
+                                    logger.info(f"Upscaling: Adjusted artZoom for newly upscaled image to: {art_zoom:.4f}")
+                            else: # Failed to host upscaled image
+                                logger.warning(f"Upscaling: Failed to host upscaled art. Falling back to original Nginx art if available.")
+                                if hosted_original_art_url: final_art_source_url = hosted_original_art_url
+                                # else final_art_source_url remains Scryfall URL (art_crop_url) by default
+                        else: # Upscaling itself failed
+                            logger.warning(f"Upscaling: Ilaria upscaling failed for {filename_of_hosted_original}. Falling back to original Nginx art if available.")
+                            if hosted_original_art_url: final_art_source_url = hosted_original_art_url
+                    else: # Mime type for original couldn't be determined for Ilaria
+                        logger.warning(f"Upscaling: Cannot determine MIME type for original art {hosted_original_art_url}. Skipping upscale. Falling back to original Nginx art if available.")
+                        if hosted_original_art_url: final_art_source_url = hosted_original_art_url
+                elif original_art_bytes_for_pipeline : # Have bytes for original, but it's not hosted (e.g., Nginx not configured or hosting failed)
+                    logger.warning(f"Upscaling: Original art available but not hosted on Nginx. Cannot upscale. Using Scryfall URL as art source.")
+                    # final_art_source_url remains art_crop_url
+                else: # No original art bytes could be obtained at all
+                    logger.warning(f"Upscaling: Cannot obtain or host original art. Cannot upscale. Using Scryfall URL as art source.")
+                    # final_art_source_url remains art_crop_url
         
+        elif hosted_original_art_url: 
+            # Upscaling not enabled/configured, but auto-fit (or other prior logic) might have successfully hosted an original.
+            # If so, use that Nginx-hosted original as the final source.
+            final_art_source_url = hosted_original_art_url
+        # else: Upscaling not enabled, no Nginx original found/created, so final_art_source_url remains art_crop_url (the initial default)
+
         set_symbol_x = self.frame_config.get("set_symbol_x", 0.0); set_symbol_y = self.frame_config.get("set_symbol_y", 0.0); set_symbol_zoom = self.frame_config.get("set_symbol_zoom", 0.1)
         actual_set_code_for_url = self.set_symbol_override.lower() if self.set_symbol_override else set_code_from_scryfall.lower()
         set_symbol_source_url = f"{ccProto}://{ccHost}:{ccPort}/img/setSymbols/official/{actual_set_code_for_url}-{rarity_code_for_symbol}.svg"
