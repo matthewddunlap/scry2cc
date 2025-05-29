@@ -10,7 +10,7 @@ import json
 import time
 import os
 import base64
-import unicodedata # For sanitizing filenames
+import unicodedata 
 
 import requests 
 from PIL import Image 
@@ -28,30 +28,35 @@ logger = logging.getLogger(__name__)
 def sanitize_for_filename(value: str) -> str:
     """
     Sanitizes a string to be safe for filenames and URL paths.
-    Converts to lowercase, replaces spaces and special characters with hyphens.
+    Converts to lowercase, removes apostrophes, replaces spaces and 
+    other special characters with hyphens.
     """
     if not isinstance(value, str):
         value = str(value)
+    
+    value = value.replace("'", "") # Remove apostrophes
     value = unicodedata.normalize('NFKD', value).encode('ascii', 'ignore').decode('ascii')
-    value = re.sub(r'[\s/:<>:"\\|?*]+', '-', value)
-    value = re.sub(r'-+', '-', value).strip('-')
+    value = re.sub(r'[\s/:<>:"\\|?*&]+', '-', value) # Added '&'
+    value = re.sub(r'-+', '-', value) # Collapse multiple hyphens
+    value = value.strip('-') # Remove leading/trailing hyphens
     return value.lower()
 
-# --- file: card_builder.py ---
-# ... (imports and sanitize_for_filename as before) ...
 
 class CardBuilder:
-    # ... (__init__ and other helper methods up to _host_image_to_nginx_webdav as before) ...
+    """Class for building card data from Scryfall data"""
+    
     def __init__(self, frame_type: str, frame_config: Dict, frame_set: str = "regular", 
                  legendary_crowns: bool = False, auto_fit_art: bool = False, 
                  set_symbol_override: Optional[str] = None, auto_fit_set_symbol: bool = False, 
                  api_delay_seconds: float = 0.1,
                  upscale_art: bool = False,
+                 
                  ilaria_upscaler_base_url: Optional[str] = None, 
                  upscaler_model_name: str = "RealESRGAN_x2plus", 
                  upscaler_outscale_factor: int = 2, 
                  upscaler_denoise_strength: float = 0.5, 
                  upscaler_face_enhance: bool = False,
+
                  image_server_base_url: Optional[str] = None, 
                  image_server_path_prefix: str = "/webdav_images" 
                 ):
@@ -150,7 +155,6 @@ class CardBuilder:
         except Exception as e: logger.error(f"General error parsing SVG dimensions: {e}", exc_info=True); return None
 
     def _calculate_auto_fit_art_params_from_data(self, image_bytes: bytes, art_url_for_logging: str) -> Optional[Dict[str, float]]:
-        # ... (Implementation as before) ...
         if not image_bytes: logger.warning(f"No image bytes for art auto-fit: {art_url_for_logging}"); return None
         try:
             img = Image.open(io.BytesIO(image_bytes)); w, h = img.width, img.height; img.close()
@@ -170,9 +174,7 @@ class CardBuilder:
             return {"artX": art_x, "artY": art_y, "artZoom": zoom}
         except Exception as e: logger.error(f"Art auto-fit from data error for {art_url_for_logging}: {e}", exc_info=True); return None
 
-
     def _calculate_auto_fit_art_params(self, art_url: str) -> Optional[Dict[str, float]]:
-        # ... (Implementation as before) ...
         if not art_url: return None
         try:
             response = requests.get(art_url, timeout=10); response.raise_for_status()
@@ -184,7 +186,6 @@ class CardBuilder:
         except Exception as e: logger.error(f"Unexpected error in art auto-fit for {art_url}: {e}", exc_info=True); return None
 
     def _get_image_mime_type_and_extension(self, image_bytes: bytes) -> tuple[Optional[str], Optional[str]]:
-        # ... (Implementation as before) ...
         try:
             img_format = None
             try: img = Image.open(io.BytesIO(image_bytes)); img_format = img.format; img.close()
@@ -201,13 +202,11 @@ class CardBuilder:
             return "application/octet-stream", "" 
         except Exception as e: logger.error(f"Could not determine image type: {e}", exc_info=True); return "application/octet-stream", ""
 
-
     def _upscale_image_with_ilaria(self, 
                                    hosted_original_image_url: str, 
                                    original_base_filename: str, 
                                    original_image_mime_type: Optional[str]
                                   ) -> Optional[bytes]:
-        # ... (Implementation as before, using /api/realesrgan) ...
         if not self.ilaria_upscaler_base_url: logger.error("Ilaria Upscaler base URL not configured. Skipping upscale."); return None
         if not hosted_original_image_url: logger.warning(f"Upscaling for '{original_base_filename}' skipped: No hosted original image URL."); return None
         ilaria_api_realesrgan_url = f"{self.ilaria_upscaler_base_url.rstrip('/')}/api/realesrgan"
@@ -231,35 +230,31 @@ class CardBuilder:
             content = e.response.text[:500] if e.response else "N/A"; logger.error(f"Ilaria API HTTP error for '{original_base_filename}': {e}. Response: {content}"); return None
         except Exception as e: logger.error(f"Ilaria API general error for '{original_base_filename}': {e}", exc_info=True); return None
 
-
     def _check_if_file_exists_on_server(self, public_url: str) -> bool:
-        """Checks if a file exists at the given public URL using a HEAD request."""
         if not public_url: return False
         try:
-            response = requests.head(public_url, timeout=5, allow_redirects=True) # Allow redirects in case server uses them
+            response = requests.head(public_url, timeout=15, allow_redirects=True) 
             if response.status_code == 200:
-                logger.debug(f"File already exists at {public_url}")
+                logger.info(f"File confirmed to exist at {public_url}")
                 return True
             elif response.status_code == 404:
-                logger.debug(f"File does not exist at {public_url}")
+                logger.info(f"File does not exist at {public_url}")
                 return False
             else:
-                logger.warning(f"Unexpected status {response.status_code} when checking for file at {public_url}")
-                return False # Treat other errors as "does not exist" or "cannot confirm"
+                logger.warning(f"Unexpected status {response.status_code} checking for file at {public_url}. Assuming not verifiably existent.")
+                return False 
         except requests.exceptions.Timeout:
-            logger.warning(f"Timeout checking for file at {public_url}")
+            logger.warning(f"Timeout (15s) checking for file at {public_url}. Assuming not verifiably existent.")
             return False
         except requests.exceptions.ConnectionError:
-            logger.warning(f"Connection error checking for file at {public_url}. Server might be down.")
-            return False # Cannot confirm existence
+            logger.warning(f"Connection error checking for file at {public_url}. Server might be down. Assuming not verifiably existent.")
+            return False 
         except Exception as e:
-            logger.warning(f"Error checking file existence at {public_url}: {e}")
+            logger.warning(f"Error checking file existence at {public_url}: {e}. Assuming not verifiably existent.")
             return False
 
     def _construct_nginx_public_url(self, sub_directory: str, base_filename: str) -> Optional[str]:
-        """Constructs the full public URL for a file on the Nginx WebDAV server."""
         if not self.image_server_base_url: return None
-        
         full_path_segment = (f"{self.image_server_path_prefix.strip('/')}/"
                              f"{sub_directory.strip('/')}/"
                              f"{base_filename.lstrip('/')}")
@@ -269,28 +264,25 @@ class CardBuilder:
     def _host_image_to_nginx_webdav(self, image_bytes: bytes, 
                                    sub_directory: str, base_filename: str) -> Optional[str]:
         public_url = self._construct_nginx_public_url(sub_directory, base_filename)
-        if not public_url: # image_server_base_url must be missing
-            logger.error(f"Image Server URL not set. Cannot host '{base_filename}'."); return None
+        if not public_url: logger.error(f"Image Server URL not set. Cannot host '{base_filename}'."); return None
         if not image_bytes: logger.warning(f"No bytes to host for '{base_filename}'."); return None
 
-        logger.info(f"Hosting '{base_filename}' to Nginx WebDAV: {public_url}")
+        logger.info(f"Attempting to host '{base_filename}' to Nginx WebDAV: {public_url}")
         mime_type, _ = self._get_image_mime_type_and_extension(image_bytes)
         headers = {'Content-Type': mime_type if mime_type else 'application/octet-stream'}
 
         try:
             response = requests.put(public_url, data=image_bytes, headers=headers, timeout=60)
-            response.raise_for_status()
+            response.raise_for_status() 
             if 200 <= response.status_code < 300:
                 logger.info(f"Hosted '{base_filename}' successfully. URL: {public_url}")
                 return public_url
-            logger.error(f"Nginx hosting error for '{base_filename}': Status {response.status_code}"); return None
+            logger.error(f"Nginx hosting error for '{base_filename}': Status {response.status_code} (unexpected success range)."); return None
         except requests.exceptions.HTTPError as e:
             content = e.response.text[:500] if e.response else "N/A"
             logger.error(f"Nginx hosting HTTP error for '{base_filename}': {e}. Response: {content}"); return None
-        except Exception as e: logger.error(f"Nginx hosting network error for '{base_filename}': {e}", exc_info=True); return None
+        except Exception as e: logger.error(f"Nginx hosting network/other error for '{base_filename}': {e}", exc_info=True); return None
     
-    # ... (Keep _format_path, build_frame_path, build_mask_path, build_land_frame_path, build_pt_frame_path) ...
-    # ... (Keep build_m15_frames, build_eighth_edition_frames, build_seventh_edition_frames, build_m15ub_frames) ...
     def _format_path(self, path_format_str: Optional[str], **kwargs) -> str:
         if not path_format_str:
             is_optional_pt = 'pt_path_format' in str(kwargs.get('caller_description', '')) and kwargs.get('path_type_optional', False)
@@ -382,7 +374,6 @@ class CardBuilder:
         return generated_frames
 
     def build_eighth_edition_frames(self, color_info: Union[Dict, List], card_data: Dict) -> List[Dict]:
-        # ... (Implementation as previously provided) ...
         generated_frames = []; pt_color_code, pt_name_prefix = None, None
         if 'power' in card_data and 'toughness' in card_data:
             if isinstance(color_info, dict):
@@ -417,7 +408,6 @@ class CardBuilder:
         return generated_frames
 
     def build_seventh_edition_frames(self, color_info, card_data: Dict) -> List[Dict]:
-        # ... (Implementation as previously provided) ...
         frames = []; common_masks_data = [{"mask_name": "frame", "display_name": "Frame"}, {"mask_name": "trim", "display_name": "Textbox Pinline"}, {"mask_name": "border", "display_name": "Border"}]
         rules_mask_data = {"mask_name": "rules", "display_name": "Rules"}
         pinline_mask_data = {"mask_name": "pinline", "display_name": "Pinline"}
@@ -436,8 +426,7 @@ class CardBuilder:
                 frames.append(create_land_frame_entry(c1['name'], self.build_land_frame_path(c1['code']), rules_mask_data))
             elif len(color_info) > 1: 
                 frames.append(create_land_frame_entry(color_info[1]['name'], self.build_land_frame_path(color_info[1]['code']), rules_mask_data))
-            else: # Single type land (e.g. basic land)
-                 frames.append(create_frame_entry(land_frame_info['name'], base_frame_src, rules_mask_data))
+            else: frames.append(create_frame_entry(land_frame_info['name'], base_frame_src, rules_mask_data))
             for mask_d in common_masks_data: frames.append(create_frame_entry(land_frame_info['name'], base_frame_src, mask_d))
         else: 
             code, name = color_info['code'], color_info['name']; frame_src = self.build_frame_path(code)
@@ -445,7 +434,6 @@ class CardBuilder:
         return frames
 
     def build_m15ub_frames(self, color_info: Union[Dict, List], card_data: Dict) -> List[Dict]:
-        # ... (Implementation as previously provided, no changes specific to hosting) ...
         generated_frames = []; card_name_for_logging = card_data.get('name', 'Unknown Card'); type_line = card_data.get('type_line', ''); is_land_card = 'Land' in type_line
         if 'power' in card_data and 'toughness' in card_data:
             pt_code_to_use, pt_name_prefix = None, "Unknown"
@@ -464,7 +452,7 @@ class CardBuilder:
         if self.legendary_crowns and is_legendary:
             pc_code, sc_code, pc_name, sc_name = None, None, "Legend", "Secondary"
             if isinstance(color_info, dict):
-                if color_info.get('is_gold') and color_info.get('component_colors'): comps = color_info['component_colors']; pc_code, pc_name = (comps[0]['code'], comps[0]['name']) if comps else (None,None); sc_code, sc_name = (comps[1]['code'], comps[1]['name']) if len(comps)>1 else (None,None)
+                if color_info.get('is_gold') and color_info.get('component_colors'): comps = color_info.get('component_colors',[]); pc_code, pc_name = (comps[0]['code'], comps[0]['name']) if comps else (None,None); sc_code, sc_name = (comps[1]['code'], comps[1]['name']) if len(comps)>1 else (None,None)
                 elif color_info.get('code'): pc_code, pc_name = color_info['code'], color_info['name']
             elif is_land_card and isinstance(color_info, list):
                 if len(color_info) > 1 and isinstance(color_info[1],dict): pc_code, pc_name = color_info[1].get('code'), color_info[1].get('name')
@@ -505,8 +493,8 @@ class CardBuilder:
         if sc_main:
             src_sc = self._format_path(land_fmt if is_land_card else base_fmt,color_code=sc_main)
             if "/error_path" not in src_sc: main_layers.extend([{"name":f"{sc_name_main} Frame","src":src_sc,"masks":[{"src":p_msk,"name":"Pinline"},{"src":"/img/frames/maskRightHalf.png","name":"Right Half"}]},{"name":f"{pc_name_main} Frame","src":src_pr,"masks":[{"src":p_msk,"name":"Pinline"}]},{"name":f"{ttfb_n} Frame","src":src_fb,"masks":[{"src":ty_msk,"name":"Type"}]},{"name":f"{ttfb_n} Frame","src":src_fb,"masks":[{"src":ti_msk,"name":"Title"}]},{"name":f"{sc_name_main} Frame","src":src_sc,"masks":[{"src":r_msk,"name":"Rules"},{"src":"/img/frames/maskRightHalf.png","name":"Right Half"}]},{"name":f"{pc_name_main} Frame","src":src_pr,"masks":[{"src":r_msk,"name":"Rules"}]}])
-            else: logger.warning(f"M15UB: Error for secondary path '{card_name_for_logging}'. Fallback.") # Fallthrough to single color
-        if not main_layers or (sc_main and "/error_path" in src_sc) : # Single color path or fallback
+            else: logger.warning(f"M15UB: Error for secondary path '{card_name_for_logging}'. Fallback.")
+        if not main_layers or (sc_main and "/error_path" in src_sc) : 
             main_layers.extend([{"name":f"{pc_name_main} Frame","src":src_pr,"masks":[{"src":p_msk,"name":"Pinline"}]},{"name":f"{tt_pfx} Frame","src":src_tt,"masks":[{"src":ty_msk,"name":"Type"}]},{"name":f"{tt_pfx} Frame","src":src_tt,"masks":[{"src":ti_msk,"name":"Title"}]},{"name":f"{pc_name_main} Frame","src":src_pr,"masks":[{"src":r_msk,"name":"Rules"}]}])
         main_layers.extend(common_layers_end); generated_frames.extend(main_layers)
         return generated_frames
@@ -563,106 +551,98 @@ class CardBuilder:
         art_zoom = self.frame_config.get("art_zoom", 1.0); art_rotate = self.frame_config.get("art_rotate", "0")
         original_image_content = None
         original_image_mime_type: Optional[str] = None
-        image_ext = ".jpg" # Default
+        original_image_ext = ".jpg" # Default extension for original
 
         if scryfall_art_crop_url:
             sanitized_card_name = sanitize_for_filename(scryfall_card_name)
             set_code_sanitized = sanitize_for_filename(set_code_from_scryfall)
             collector_number_sanitized = sanitize_for_filename(collector_number_from_scryfall)
             
-            try: # Determine initial extension from URL
+            try:
                 url_path_no_query = scryfall_art_crop_url.split('?')[0]
                 _, ext_from_url = os.path.splitext(url_path_no_query)
                 if ext_from_url and ext_from_url.lower() in ['.jpg', '.jpeg', '.png', '.gif', '.webp']:
-                    image_ext = ext_from_url.lower()
-            except Exception: pass # Keep default .jpg if URL parsing fails
+                    original_image_ext = ext_from_url.lower()
+            except Exception: pass
 
-            # Fetch image data if needed for auto-fit or upscale/hosting
             needs_fetch = self.auto_fit_art or (self.upscale_art and self.image_server_base_url and self.ilaria_upscaler_base_url)
             if needs_fetch:
                 try:
-                    logger.debug(f"Fetching art from {scryfall_art_crop_url} for {set_code_sanitized}-{collector_number_sanitized}-{sanitized_card_name}.")
+                    logger.debug(f"Fetching art from {scryfall_art_crop_url} for {sanitized_card_name}_{set_code_sanitized}_{collector_number_sanitized}.")
                     response = requests.get(scryfall_art_crop_url, timeout=10); response.raise_for_status()
-                    if self.api_delay_seconds > 0 and (not hasattr(response, 'from_cache') or response.from_cache is False if hasattr(response, 'from_cache') else True):
-                        time.sleep(self.api_delay_seconds)
+                    if self.api_delay_seconds > 0 and (not hasattr(response, 'from_cache') or response.from_cache is False if hasattr(response, 'from_cache') else True): time.sleep(self.api_delay_seconds)
                     original_image_content = response.content
                     original_image_mime_type, determined_ext = self._get_image_mime_type_and_extension(original_image_content)
-                    if determined_ext: image_ext = determined_ext 
-                except Exception as e: 
-                    logger.error(f"Failed to fetch art from {scryfall_art_crop_url}: {e}", exc_info=True)
+                    if determined_ext: original_image_ext = determined_ext 
+                except Exception as e: logger.error(f"Failed to fetch art from {scryfall_art_crop_url}: {e}", exc_info=True)
 
-            if not image_ext.startswith('.'): image_ext = '.' + image_ext
-            base_art_filename = f"{set_code_sanitized}-{collector_number_sanitized}-{sanitized_card_name}{image_ext}"
-
-            # Check for existing hosted original BEFORE auto-fit potentially re-fetches
-            expected_original_url = self._construct_nginx_public_url("original", base_art_filename)
-            if self.upscale_art and self.image_server_base_url and expected_original_url and self._check_if_file_exists_on_server(expected_original_url):
-                logger.info(f"Original art '{base_art_filename}' already exists on Nginx server.")
-                hosted_original_art_url = expected_original_url
-                # If original exists, and we need its content for upscaling but haven't fetched it yet
-                if not original_image_content and self.ilaria_upscaler_base_url: 
-                    try:
-                        logger.debug(f"Fetching existing original art from Nginx: {hosted_original_art_url}")
-                        response = requests.get(hosted_original_art_url, timeout=10); response.raise_for_status()
-                        original_image_content = response.content
-                        # Re-verify mime type from potentially different hosted version
-                        original_image_mime_type, _ = self._get_image_mime_type_and_extension(original_image_content)
-                    except Exception as e:
-                        logger.error(f"Failed to fetch existing original art from Nginx for upscaling: {e}")
-                        original_image_content = None # Cannot proceed with upscaling if this fails
+            if not original_image_ext.startswith('.'): original_image_ext = '.' + original_image_ext
+            base_art_filename_original_ext = f"{sanitized_card_name}_{set_code_sanitized}_{collector_number_sanitized}{original_image_ext}"
             
-            if self.auto_fit_art:
-                auto_fit_params = None
-                if original_image_content: auto_fit_params = self._calculate_auto_fit_art_params_from_data(original_image_content, scryfall_art_crop_url)
-                elif scryfall_art_crop_url: auto_fit_params = self._calculate_auto_fit_art_params(scryfall_art_crop_url) # Fallback fetch
-                if auto_fit_params: art_x, art_y, art_zoom = auto_fit_params["artX"], auto_fit_params["artY"], auto_fit_params["artZoom"]
-                else: logger.warning(f"Auto-fit failed for {base_art_filename}.")
+            expected_original_url = self._construct_nginx_public_url("original", base_art_filename_original_ext)
+            upscaler_model_sanitized = sanitize_for_filename(self.upscaler_model_name)
+            
+            upscaled_image_expected_ext = ".png" 
+            base_art_filename_upscaled_check = f"{sanitized_card_name}_{set_code_sanitized}_{collector_number_sanitized}{upscaled_image_expected_ext}"
+            expected_upscaled_url = self._construct_nginx_public_url(upscaler_model_sanitized, base_art_filename_upscaled_check)
+            
+            used_existing_upscaled = False
 
-            # Upscaling and Hosting Logic
             if self.upscale_art and self.image_server_base_url and self.ilaria_upscaler_base_url:
-                upscaler_model_sanitized = sanitize_for_filename(self.upscaler_model_name)
-                # Determine extension for potentially upscaled file BEFORE checking existence
-                # Assume upscaler might output PNG if original was JPG, or keep original. Best guess: use original ext first.
-                potential_upscaled_filename = f"{set_code_sanitized}-{collector_number_sanitized}-{sanitized_card_name}{image_ext}" # Initial guess
-                expected_upscaled_url = self._construct_nginx_public_url(upscaler_model_sanitized, potential_upscaled_filename)
-
-                # If upscaled version already exists, use it and skip all processing
                 if expected_upscaled_url and self._check_if_file_exists_on_server(expected_upscaled_url):
-                    logger.info(f"Upscaled art '{potential_upscaled_filename}' for model '{upscaler_model_sanitized}' already exists on Nginx server.")
+                    logger.info(f"Upscaled art '{base_art_filename_upscaled_check}' for model '{upscaler_model_sanitized}' already on Nginx.")
                     hosted_upscaled_art_url = expected_upscaled_url
                     final_art_source_url = hosted_upscaled_art_url
-                    # Try to also set hosted_original_art_url if not already set and exists
-                    if not hosted_original_art_url and expected_original_url and self._check_if_file_exists_on_server(expected_original_url):
+                    used_existing_upscaled = True
+                    if expected_original_url and self._check_if_file_exists_on_server(expected_original_url):
                         hosted_original_art_url = expected_original_url
-
-                elif original_image_content: # Upscaled doesn't exist, proceed with processing
-                    if not hosted_original_art_url: # Host original if it wasn't found earlier
-                        hosted_original_art_url = self._host_image_to_nginx_webdav(original_image_content, "original", base_art_filename)
+                
+                if not used_existing_upscaled:
+                    # Ensure original_image_content is available if we need to process/upload
+                    if not original_image_content and needs_fetch: # Re-fetch if it wasn't fetched or failed
+                        logger.warning(f"Original content for {base_art_filename_original_ext} not available for upscaling, attempting fetch again (or from existing Nginx original).")
+                        if expected_original_url and self._check_if_file_exists_on_server(expected_original_url):
+                            try:
+                                logger.debug(f"Fetching existing original art from Nginx: {expected_original_url}")
+                                response = requests.get(expected_original_url, timeout=10); response.raise_for_status()
+                                original_image_content = response.content
+                                original_image_mime_type, _ = self._get_image_mime_type_and_extension(original_image_content) # update mime if fetched from Nginx
+                                hosted_original_art_url = expected_original_url # Confirm it
+                            except Exception as e: logger.error(f"Failed to fetch existing original from Nginx: {e}")
+                        elif scryfall_art_crop_url: # If not on Nginx, try Scryfall again
+                             try:
+                                response = requests.get(scryfall_art_crop_url, timeout=10); response.raise_for_status()
+                                original_image_content = response.content
+                                original_image_mime_type, _ = self._get_image_mime_type_and_extension(original_image_content)
+                             except Exception as e: logger.error(f"Re-fetch from Scryfall failed for {scryfall_art_crop_url}: {e}")
                     
-                    if hosted_original_art_url:
-                        upscaled_image_bytes = self._upscale_image_with_ilaria(
-                            hosted_original_art_url, base_art_filename, original_image_mime_type
-                        )
-                        if upscaled_image_bytes:
-                            _, upscaled_ext = self._get_image_mime_type_and_extension(upscaled_image_bytes)
-                            if not upscaled_ext: upscaled_ext = image_ext 
-                            if not upscaled_ext.startswith('.'): upscaled_ext = '.' + upscaled_ext
-                            upscaled_art_filename = f"{set_code_sanitized}-{collector_number_sanitized}-{sanitized_card_name}{upscaled_ext}"
-                            
-                            hosted_upscaled_art_url = self._host_image_to_nginx_webdav(
-                                upscaled_image_bytes, upscaler_model_sanitized, upscaled_art_filename
-                            )
-                            if hosted_upscaled_art_url: final_art_source_url = hosted_upscaled_art_url
+                    if original_image_content:
+                        if not hosted_original_art_url: # If not found or set from existing check
+                             hosted_original_art_url = self._host_image_to_nginx_webdav(original_image_content, "original", base_art_filename_original_ext)
+                        
+                        if hosted_original_art_url:
+                            upscaled_image_bytes = self._upscale_image_with_ilaria(hosted_original_art_url, base_art_filename_original_ext, original_image_mime_type)
+                            if upscaled_image_bytes:
+                                _, actual_upscaled_ext = self._get_image_mime_type_and_extension(upscaled_image_bytes)
+                                if not actual_upscaled_ext: actual_upscaled_ext = upscaled_image_expected_ext 
+                                if not actual_upscaled_ext.startswith('.'): actual_upscaled_ext = '.' + actual_upscaled_ext
+                                upscaled_art_filename_to_save = f"{sanitized_card_name}_{set_code_sanitized}_{collector_number_sanitized}{actual_upscaled_ext}"
+                                hosted_upscaled_art_url = self._host_image_to_nginx_webdav(upscaled_image_bytes, upscaler_model_sanitized, upscaled_art_filename_to_save)
+                                if hosted_upscaled_art_url: final_art_source_url = hosted_upscaled_art_url
+                                elif hosted_original_art_url: final_art_source_url = hosted_original_art_url
                             elif hosted_original_art_url: final_art_source_url = hosted_original_art_url
-                        elif hosted_original_art_url: final_art_source_url = hosted_original_art_url
-                    else: final_art_source_url = scryfall_art_crop_url 
-                else: # No original_image_content, can't upscale
-                    logger.warning(f"Cannot upscale/host {base_art_filename}: Original image content not available.")
+                        else: final_art_source_url = scryfall_art_crop_url 
+                    else: logger.warning(f"Cannot upscale/host {base_art_filename_original_ext}: Original image content not available after checks/fetches.")
             elif self.upscale_art:
-                 logger.warning(f"Upscaling/hosting skipped for {base_art_filename}: Global requirements not met.")
+                 logger.warning(f"Upscaling/hosting skipped for {base_art_filename_original_ext}: Global requirements for upscaling not met.")
 
+            if self.auto_fit_art and not used_existing_upscaled:
+                auto_fit_params = None
+                if original_image_content: auto_fit_params = self._calculate_auto_fit_art_params_from_data(original_image_content, scryfall_art_crop_url)
+                elif scryfall_art_crop_url: auto_fit_params = self._calculate_auto_fit_art_params(scryfall_art_crop_url)
+                if auto_fit_params: art_x, art_y, art_zoom = auto_fit_params["artX"], auto_fit_params["artY"], auto_fit_params["artZoom"]
+                else: logger.warning(f"Auto-fit failed for {base_art_filename_original_ext}.")
         
-        # ... (Set Symbol, P/T, Title, Final Card Object construction as before) ...
         set_symbol_x = self.frame_config.get("set_symbol_x", 0.0); set_symbol_y = self.frame_config.get("set_symbol_y", 0.0); set_symbol_zoom = self.frame_config.get("set_symbol_zoom", 0.1)
         rarity_from_scryfall = card_data.get('rarity', 'c')
         rarity_code_for_symbol = RARITY_MAP.get(rarity_from_scryfall, rarity_from_scryfall)
