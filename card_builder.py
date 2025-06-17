@@ -193,7 +193,7 @@ class CardBuilder:
         if not self.ilaria_upscaler_base_url: logger.error("Ilaria URL not set."); return None
         if not hosted_original_url: logger.warning(f"No hosted original URL for '{filename}'."); return None
         url = f"{self.ilaria_upscaler_base_url.rstrip('/')}/api/realesrgan"
-        desc = {"path":hosted_original_url,"url":hosted_original_url,"orig_name":filename,"size":None,"mime_type":mime if mime else "app/octet-stream","is_stream":False}
+        desc = {"path":hosted_original_url,"url":hosted_original_url,"orig_name":filename,"size":None,"mime_type":mime if mime else "application/octet-stream","is_stream":False}
         payload = {"data": [desc, self.upscaler_model_name, self.upscaler_denoise_strength, self.upscaler_face_enhance, float(self.upscaler_outscale_factor)]}
         logger.info(f"Upscaling '{filename}' via Ilaria: {url} using URL: {hosted_original_url}")
         try:
