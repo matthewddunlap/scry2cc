@@ -56,8 +56,21 @@ class ColorDetector:
             # Let's look for "{T}: Add {SYMBOL}" or "Add {SYMBOL}" to be more specific
             # This regex looks for the mana symbol if it's preceded by "Add " or ": Add "
             # It's a simplified check.
-            pattern = r"(?:Add\s|\:\s*Add\s)" + re.escape(mana_symbol_scryfall)
-            if re.search(pattern, oracle_text, re.IGNORECASE):
+            #pattern = r"(?:Add\s|\:\s*Add\s)" + re.escape(mana_symbol_scryfall)
+            #if re.search(pattern, oracle_text, re.IGNORECASE):
+            # Look for mana symbols that appear after "Add" in the oracle text
+            # This handles cases like "Add {U}{R}" where both symbols should be detected
+            # First, find all "Add" clauses (everything from "Add" to the next period or semicolon)
+            add_clauses = re.findall(r'Add\s[^.;]+', oracle_text, re.IGNORECASE)
+            
+            # Check if the mana symbol appears in any "Add" clause
+            found_in_add_clause = False
+            for clause in add_clauses:
+                if mana_symbol_scryfall in clause:
+                    found_in_add_clause = True
+                    break
+            
+            if found_in_add_clause:
                 # Ensure we only add each color once, even if mentioned multiple times
                 if not any(item['color_key'] == color_key_scryfall for item in mana_positions):
                     # Find the first actual occurrence to sort by position if needed,
