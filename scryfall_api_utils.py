@@ -106,7 +106,7 @@ class ScryfallAPI:
         return all_cards
 
     def get_earliest_printing(self, card_name: str) -> Optional[Dict]:
-        # ... (original implementation, but now search_cards returns a List)
+        """Get the earliest printing of a card by name."""
         try:
             card_data = self.get_card_by_name(card_name)
             if not card_data or 'oracle_id' not in card_data:
@@ -132,7 +132,56 @@ class ScryfallAPI:
             logger.error(f"Unexpected error getting earliest printing for '{card_name}': {e}")
             return None
 
-    # --- NEW METHOD for Basic Lands ---
+    def get_latest_printing(self, card_name: str) -> Optional[Dict]:
+        """Get the latest printing of a card by name."""
+        try:
+            card_data = self.get_card_by_name(card_name)
+            if not card_data or 'oracle_id' not in card_data:
+                return None # Error logged in get_card_by_name
+            
+            oracle_id = card_data['oracle_id']
+            
+            # Search for all printings, ordered by release date descending to get latest first
+            search_results_list = self.search_cards(f"oracle_id:{oracle_id}", "prints", "released", "desc")
+            
+            if search_results_list: # Check if the list is not empty
+                latest_card = search_results_list[0]
+                set_code = latest_card.get('set')
+                if set_code:
+                    set_data = self.get_set_data(set_code)
+                    if set_data and 'released_at' in set_data:
+                        logger.info(f"Confirmed latest printing of '{card_name}': {set_code} ({set_data['released_at']})")
+                return latest_card
+            else:
+                logger.error(f"No printings found for card '{card_name}' with oracle_id {oracle_id}")
+                return None
+        except Exception as e:
+            logger.error(f"Unexpected error getting latest printing for '{card_name}': {e}")
+            return None
+
+    def get_all_art_printings(self, card_name: str) -> List[Dict]:
+        """Get all unique art printings of a card by name."""
+        try:
+            card_data = self.get_card_by_name(card_name)
+            if not card_data or 'oracle_id' not in card_data:
+                return [] # Error logged in get_card_by_name
+            
+            oracle_id = card_data['oracle_id']
+            
+            # Search for all printings, unique by art, ordered by release date ascending
+            search_results_list = self.search_cards(f"oracle_id:{oracle_id}", "art", "released", "asc")
+            
+            if search_results_list:
+                logger.info(f"Found {len(search_results_list)} unique art printings for '{card_name}'")
+                return search_results_list
+            else:
+                logger.error(f"No printings found for card '{card_name}' with oracle_id {oracle_id}")
+                return []
+        except Exception as e:
+            logger.error(f"Unexpected error getting all art printings for '{card_name}': {e}")
+            return []
+
+    # --- EXISTING METHOD for Basic Lands ---
     def get_all_printings_of_basic_land(self, land_name: str) -> List[Dict]:
         """
         Fetches all non-full-art printings of a specific basic land type, unique by art.

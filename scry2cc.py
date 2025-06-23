@@ -38,6 +38,11 @@ def main():
     parser.add_argument('--fetch_basic_land', type=str, default=None, 
                         choices=['Forest', 'Island', 'Mountain', 'Plains', 'Swamp'],
                         help='Fetch all non-full-art printings (unique by art) of a specific basic land type. If used, input_file is ignored.')
+    
+    # NEW: Art mode argument
+    parser.add_argument('--art_mode', type=str, default='earliest', 
+                        choices=['earliest', 'latest', 'all_art'],
+                        help='Art selection mode: earliest (default), latest, or all_art (all unique art versions)')
 
     upscaling_group = parser.add_argument_group('Upscaling Options')
     upscaling_group.add_argument('--upscale_art', action='store_true', help='Enable art upscaling via Ilaria Upscaler.')
@@ -72,6 +77,7 @@ def main():
         auto_fit_set_symbol=args.auto_fit_set_symbol,
         api_delay_seconds=max(0, args.api_delay_ms / 1000.0),
         fetch_basic_land_type=args.fetch_basic_land,
+        art_mode=args.art_mode,  # NEW: Pass art mode
         
         upscale_art=args.upscale_art,
         ilaria_upscaler_base_url=args.ilaria_base_url,

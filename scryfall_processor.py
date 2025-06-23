@@ -29,6 +29,7 @@ class ScryfallCardProcessor:
                  auto_fit_set_symbol: bool = False, 
                  api_delay_seconds: float = 0.1,
                  fetch_basic_land_type: Optional[str] = None,
+                 art_mode: str = "earliest",  # NEW: Art mode
                  
                  # Upscaling parameters
                  upscale_art: bool = False,
@@ -52,6 +53,7 @@ class ScryfallCardProcessor:
         self.auto_fit_set_symbol = auto_fit_set_symbol
         self.api_delay_seconds = api_delay_seconds
         self.fetch_basic_land_type = fetch_basic_land_type 
+        self.art_mode = art_mode  # NEW: Store art mode
         
         self.upscale_art = upscale_art
         self.ilaria_upscaler_base_url = ilaria_upscaler_base_url
@@ -63,7 +65,7 @@ class ScryfallCardProcessor:
         self.image_server_base_url = image_server_base_url
         self.image_server_path_prefix = image_server_path_prefix
 
-        logger.debug(f"ScryfallCardProcessor __init__: upscale_art='{self.upscale_art}', image_server_base_url='{self.image_server_base_url}'")
+        logger.debug(f"ScryfallCardProcessor __init__: upscale_art='{self.upscale_art}', image_server_base_url='{self.image_server_base_url}', art_mode='{self.art_mode}'")
 
         self.frame_config = get_frame_config(frame_type)
         self.scryfall_api = ScryfallAPI()  
@@ -89,6 +91,32 @@ class ScryfallCardProcessor:
             image_server_path_prefix=self.image_server_path_prefix
         ) 
     
+    def format_card_filename(self, card_data: Dict) -> str:
+        """
+        Format card data into filename: [card-name]_[set]_[number]
+        - card name has spaces replaced with dashes
+        - special characters removed/replaced
+        - all lowercase
+        - delimited with underscores
+        NOTE: No .png extension added here as it's handled downstream
+        """
+        import re
+        
+        card_name = card_data.get('name', 'unknown')
+        set_code = card_data.get('set', 'unk')
+        collector_number = card_data.get('collector_number', '0')
+        
+        # Clean card name: lowercase, replace spaces with dashes, remove special chars
+        clean_name = re.sub(r'[^\w\s-]', '', card_name.lower())  # Remove special chars except spaces and dashes
+        clean_name = re.sub(r'\s+', '-', clean_name.strip())     # Replace spaces with dashes
+        clean_name = re.sub(r'-+', '-', clean_name)              # Collapse multiple dashes
+        
+        # Clean set code and collector number
+        clean_set = set_code.lower()
+        clean_number = collector_number
+        
+        return f"{clean_name}_{clean_set}_{clean_number}"
+    
     def load_cards_from_file(self) -> List[str]:
         card_names = []
         if not self.input_file: return []
@@ -105,6 +133,23 @@ class ScryfallCardProcessor:
             return card_names
         except Exception as e: logger.error(f"Error reading {self.input_file}: {e}"); return []
     
+    def get_card_data_by_art_mode(self, card_name: str) -> List[Dict]:
+        """
+        Get card data based on the art mode.
+        Returns a list of card data objects (single item for earliest/latest, multiple for all_art).
+        """
+        if self.art_mode == "earliest":
+            card_data = self.scryfall_api.get_earliest_printing(card_name)
+            return [card_data] if card_data else []
+        elif self.art_mode == "latest":
+            card_data = self.scryfall_api.get_latest_printing(card_name)
+            return [card_data] if card_data else []
+        elif self.art_mode == "all_art":
+            return self.scryfall_api.get_all_art_printings(card_name)
+        else:
+            logger.error(f"Unknown art mode: {self.art_mode}")
+            return []
+    
     def process_cards(self) -> List[Dict]:
         items_to_process = [] 
         if self.fetch_basic_land_type:
@@ -114,7 +159,7 @@ class ScryfallCardProcessor:
                 key = f"{name}-{printing_data.get('set', 'UNK')}-{printing_data.get('collector_number', '0')}"
                 items_to_process.append({"key_name": key, "card_data_obj": printing_data, "is_basic_land_fetch_item": True})
         elif self.input_file: 
-            logger.info(f"Mode: Processing from file: {self.input_file}")
+            logger.info(f"Mode: Processing from file: {self.input_file} (art mode: {self.art_mode})")
             for name in self.load_cards_from_file():
                 items_to_process.append({"key_name": name, "name_to_fetch": name, "is_basic_land_fetch_item": False})
         else: logger.error("No input source."); return []
@@ -125,24 +170,55 @@ class ScryfallCardProcessor:
         for i, item in enumerate(items_to_process):
             card_key = item["key_name"]
             is_basic = item["is_basic_land_fetch_item"]
-            scryfall_data = item["card_data_obj"] if is_basic else self.scryfall_api.get_earliest_printing(item["name_to_fetch"])
             
-            log_prefix = f"Basic land ({i+1}/{len(items_to_process)})" if is_basic else f"Card from file ({i+1}/{len(items_to_process)})"
-            logger.info(f"{log_prefix}: {card_key}" + (f" (Set: {scryfall_data.get('set')})" if scryfall_data else ""))
+            if is_basic:
+                # Basic land fetch mode - use existing logic
+                scryfall_data_list = [item["card_data_obj"]]
+            else:
+                # File mode - use art mode
+                scryfall_data_list = self.get_card_data_by_art_mode(item["name_to_fetch"])
+            
+            if not scryfall_data_list:
+                logger.warning(f"No Scryfall data for '{card_key}', skipping.")
+                continue
+            
+            # Process each card data object (multiple for all_art mode)
+            for j, scryfall_data in enumerate(scryfall_data_list):
+                # Create unique key for each printing when using all_art mode
+                if len(scryfall_data_list) > 1:
+                    # Format: [card-name]_[set]_[number].png
+                    printing_key = self.format_card_filename(scryfall_data)
+                    log_prefix = f"Card from file ({i+1}/{len(items_to_process)}, art {j+1}/{len(scryfall_data_list)})"
+                else:
+                    # For single printings, still use the new format for consistency
+                    if is_basic:
+                        printing_key = card_key  # Keep original format for basic lands
+                    else:
+                        printing_key = self.format_card_filename(scryfall_data)
+                    log_prefix = f"Basic land ({i+1}/{len(items_to_process)})" if is_basic else f"Card from file ({i+1}/{len(items_to_process)})"
+                
+                logger.info(f"{log_prefix}: {printing_key}" + (f" (Set: {scryfall_data.get('set')})" if scryfall_data else ""))
 
-            if not scryfall_data: logger.warning(f"No Scryfall data for '{card_key}', skipping."); continue
+                try:
+                    color_info = ColorDetector.get_color_info(scryfall_data) 
+                    card_object = self.card_builder.build_card_data(
+                        card_name=printing_key, 
+                        card_data=scryfall_data, 
+                        color_info=color_info,
+                        is_basic_land_fetch_mode=is_basic,
+                        basic_land_type_override=self.fetch_basic_land_type if is_basic else None
+                    )
+                    result.append(card_object)
+                except Exception as e: 
+                    logger.error(f"Error processing '{printing_key}': {e}", exc_info=True)
+                
+                # Add delay between individual printings when processing multiple arts
+                if self.api_delay_seconds > 0 and j < len(scryfall_data_list) - 1:
+                    time.sleep(self.api_delay_seconds)
             
-            try:
-                color_info = ColorDetector.get_color_info(scryfall_data) 
-                card_object = self.card_builder.build_card_data(
-                    card_name=card_key, card_data=scryfall_data, color_info=color_info,
-                    is_basic_land_fetch_mode=is_basic,
-                    basic_land_type_override=self.fetch_basic_land_type if is_basic else None
-                )
-                result.append(card_object)
-            except Exception as e: logger.error(f"Error processing '{card_key}': {e}", exc_info=True)
-            
-            if self.api_delay_seconds > 0 and i < len(items_to_process) - 1: time.sleep(self.api_delay_seconds)
+            # Add delay between different cards
+            if self.api_delay_seconds > 0 and i < len(items_to_process) - 1:
+                time.sleep(self.api_delay_seconds)
         return result
     
     def save_output(self, output_file: str, data: List[Dict]):
