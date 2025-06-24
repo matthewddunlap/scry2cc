@@ -46,17 +46,17 @@ def main():
 
     upscaling_group = parser.add_argument_group('Upscaling Options')
     upscaling_group.add_argument('--upscale_art', action='store_true', help='Enable art upscaling via Ilaria Upscaler.')
-    upscaling_group.add_argument('--ilaria_base_url', type=str, default=None, help='Base URL of the Ilaria Upscaler (e.g., http://localhost:7860).')
+    upscaling_group.add_argument('--ilaria_base_url', type=str, default=None, help='Base URL of the Ilaria Upscaler (e.g., https://thestinger-ilaria-upscaler.hf.space).')
     upscaling_group.add_argument('--upscaler_model_name', type=str, default="RealESRGAN_x2plus", help='Upscaler model name (default: RealESRGAN_x2plus).')
     upscaling_group.add_argument('--upscaler_outscale_factor', type=int, default=2, help='Upscale factor (default: 2).')
     upscaling_group.add_argument('--upscaler_denoise_strength', type=float, default=0.5, help='Denoise strength (default: 0.5).')
     upscaling_group.add_argument('--upscaler_face_enhance', action='store_true', help='Enable face enhancement (default: False).')
 
-    image_server_group = parser.add_argument_group('Image Server Options (Nginx WebDAV)')
+    image_server_group = parser.add_argument_group('Image Server Options')
     image_server_group.add_argument('--image_server_base_url', type=str, default=None, 
-                                   help='Base URL of the Nginx WebDAV image server (e.g., http://localhost:8088). Required if --upscale_art is used for hosting.')
-    image_server_group.add_argument('--image_server_path_prefix', type=str, default="/webdav_images",
-                                   help='Base path prefix on image server (default: /webdav_images).')
+                                   help='Base URL of the image server (e.g., http://localhost:8088). Required if --upscale_art is used for hosting.')
+    image_server_group.add_argument('--image_server_path_prefix', type=str, default="/local_art",
+                                   help='Base path prefix on image server (default: /local_art).')
     
     args = parser.parse_args()
     logger.debug(f"Parsed args: {args}") 

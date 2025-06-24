@@ -1,0 +1,4 @@
+gradio_client
+pillow
+lxml
+requests

@@ -23,6 +23,8 @@ from config import (
 )
 from color_mapping import COLOR_CODE_MAP, RARITY_MAP
 
+from gradio_client import Client, file as gradio_file
+
 logger = logging.getLogger(__name__)
 
 def sanitize_for_filename(value: str) -> str:
@@ -190,21 +192,49 @@ class CardBuilder:
         except Exception: return "application/octet-stream", ""
 
     def _upscale_image_with_ilaria(self, hosted_original_url: str, filename: str, mime: Optional[str]) -> Optional[bytes]:
-        if not self.ilaria_upscaler_base_url: logger.error("Ilaria URL not set."); return None
-        if not hosted_original_url: logger.warning(f"No hosted original URL for '{filename}'."); return None
-        url = f"{self.ilaria_upscaler_base_url.rstrip('/')}/api/realesrgan"
-        desc = {"path":hosted_original_url,"url":hosted_original_url,"orig_name":filename,"size":None,"mime_type":mime if mime else "application/octet-stream","is_stream":False}
-        payload = {"data": [desc, self.upscaler_model_name, self.upscaler_denoise_strength, self.upscaler_face_enhance, float(self.upscaler_outscale_factor)]}
-        logger.info(f"Upscaling '{filename}' via Ilaria: {url} using URL: {hosted_original_url}")
+        if not self.ilaria_upscaler_base_url:
+            logger.error("Ilaria URL not set.")
+            return None
+        if not hosted_original_url:
+            logger.warning(f"No hosted original URL for '{filename}'.")
+            return None
+
         try:
-            r = requests.post(url, json=payload, timeout=180); r.raise_for_status(); api_data = r.json()
-            if 'data' in api_data and isinstance(api_data['data'],list) and api_data['data'] and isinstance(api_data['data'][0],dict) and api_data['data'][0].get('url'):
-                temp_url = api_data['data'][0]['url']
-                logger.info(f"Upscaled (temp) for '{filename}' at: {temp_url}. Fetching...")
-                r_up = requests.get(temp_url, timeout=60); r_up.raise_for_status()
-                logger.info(f"Fetched upscaled for '{filename}'."); return r_up.content
-            logger.error(f"Ilaria unexpected output for '{filename}': {str(api_data.get('data',['N/A'])[0])[:200]}"); return None
-        except Exception as e: logger.error(f"Ilaria API error for '{filename}': {e}", exc_info=True); return None
+            logger.info(f"Connecting to Ilaria Upscaler via gradio_client.")
+            client = Client("TheStinger/Ilaria_Upscaler")
+
+            img_bytes = self._fetch_image_bytes(hosted_original_url, "Upscaling with gradio_client")
+            if not img_bytes:
+                logger.error(f"Failed to download image bytes from {hosted_original_url}")
+                return None
+
+            temp_path = f"/tmp/{sanitize_for_filename(filename)}"
+            with open(temp_path, "wb") as f:
+                f.write(img_bytes)
+
+            logger.info(f"Upscaling {filename} using model '{self.upscaler_model_name}' via gradio_client.")
+            result = client.predict(
+                img=gradio_file(temp_path),
+                model_name=self.upscaler_model_name,
+                denoise_strength=self.upscaler_denoise_strength,
+                face_enhance=self.upscaler_face_enhance,
+                outscale=self.upscaler_outscale_factor,
+                api_name="/realesrgan"
+            )
+
+            if isinstance(result, tuple):
+                result_path = result[0]  # grab only the image path
+            else:
+                result_path = result
+
+            logger.info(f"Upscaled image path: {result_path}")
+
+            with open(result_path, "rb") as f:
+                return f.read()
+
+        except Exception as e:
+            logger.error(f"Gradio upscaling error for '{filename}': {e}", exc_info=True)
+            return None
 
     def _check_if_file_exists_on_server(self, public_url: str) -> bool:
         if not public_url: return False
