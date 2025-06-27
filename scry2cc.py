@@ -21,6 +21,7 @@ init_logging()
 logger = logging.getLogger(__name__)
 
 def main():
+    # MODIFIED: Updated description
     parser = argparse.ArgumentParser(description='Process MTG cards and create CardConjurer JSON. Provide EITHER an input_file OR --fetch_basic_land.')
     
     parser.add_argument('input_file', nargs='?', default=None, 
@@ -39,7 +40,6 @@ def main():
                         choices=['Forest', 'Island', 'Mountain', 'Plains', 'Swamp'],
                         help='Fetch all non-full-art printings (unique by art) of a specific basic land type. If used, input_file is ignored.')
     
-    # NEW: Art mode argument
     parser.add_argument('--art_mode', type=str, default='earliest', 
                         choices=['earliest', 'latest', 'all_art'],
                         help='Art selection mode: earliest (default), latest, or all_art (all unique art versions)')
@@ -52,11 +52,21 @@ def main():
     upscaling_group.add_argument('--upscaler_denoise_strength', type=float, default=0.5, help='Denoise strength (default: 0.5).')
     upscaling_group.add_argument('--upscaler_face_enhance', action='store_true', help='Enable face enhancement (default: False).')
 
-    image_server_group = parser.add_argument_group('Image Server Options')
-    image_server_group.add_argument('--image_server_base_url', type=str, default=None, 
-                                   help='Base URL of the image server (e.g., http://localhost:8088). Required if --upscale_art is used for hosting.')
-    image_server_group.add_argument('--image_server_path_prefix', type=str, default="/local_art",
-                                   help='Base path prefix on image server (default: /local_art).')
+    # MODIFIED: Renamed group for clarity
+    output_options_group = parser.add_argument_group('Output Options (for processed art)')
+    
+    # NEW: Argument for local directory output
+    output_options_group.add_argument('--output-dir', type=str, default=None,
+                                      help='Local directory to save images to. If provided, server upload is skipped.')
+
+    # NEW: Argument for the Card Conjurer-facing URL when saving locally
+    output_options_group.add_argument('--cc-url', type=str, default=None,
+                                      help='The base URL that Card Conjurer will use to access the art. Required when using --output-dir.')
+    
+    output_options_group.add_argument('--image_server_base_url', type=str, default=None, 
+                                      help='Base URL of the image server (e.g., http://localhost:8088).')
+    output_options_group.add_argument('--image_server_path_prefix', type=str, default="/local_art",
+                                      help='Base path prefix on image server (default: /local_art) or subdirectory in --output-dir.')
     
     args = parser.parse_args()
     logger.debug(f"Parsed args: {args}") 
@@ -64,9 +74,18 @@ def main():
     if not args.input_file and not args.fetch_basic_land:
         parser.error("Either an input_file or --fetch_basic_land must be specified.")
     
-    if args.upscale_art and (not args.ilaria_base_url or not args.image_server_base_url):
-        parser.error("--ilaria_base_url and --image_server_base_url are required when --upscale_art is enabled.")
+    # --- MODIFIED: Updated validation logic for output ---
+    if not args.output_dir and not args.image_server_base_url:
+        parser.error("You must provide an output destination for the images: either --output-dir (with --cc-url) for local saving, or --image_server_base_url for server upload.")
 
+    if args.output_dir and not args.cc_url:
+        parser.error("--cc-url is required when using --output-dir.")
+
+    if args.upscale_art and not args.ilaria_base_url:
+        parser.error("--ilaria_base_url is required when --upscale_art is enabled.")
+    # --- END MODIFICATION ---
+
+    # MODIFIED: Pass the new output_dir argument
     processor = ScryfallCardProcessor(
         input_file=args.input_file if not args.fetch_basic_land else None, 
         frame_type=args.frame, 
@@ -77,7 +96,7 @@ def main():
         auto_fit_set_symbol=args.auto_fit_set_symbol,
         api_delay_seconds=max(0, args.api_delay_ms / 1000.0),
         fetch_basic_land_type=args.fetch_basic_land,
-        art_mode=args.art_mode,  # NEW: Pass art mode
+        art_mode=args.art_mode,
         
         upscale_art=args.upscale_art,
         ilaria_upscaler_base_url=args.ilaria_base_url,
@@ -87,7 +106,12 @@ def main():
         upscaler_face_enhance=args.upscaler_face_enhance,
         
         image_server_base_url=args.image_server_base_url,
-        image_server_path_prefix=args.image_server_path_prefix
+        image_server_path_prefix=args.image_server_path_prefix,
+        
+        # NEW: Pass the output directory
+        output_dir=args.output_dir,
+        # NEW: Pass the Card Conjurer URL
+        cc_url=args.cc_url
     )
     result = processor.process_cards()
     processor.save_output(args.output_file, result)

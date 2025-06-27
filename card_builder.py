@@ -11,6 +11,7 @@ import time
 import os 
 import base64
 import unicodedata 
+from pathlib import Path # NEW: Import Path for robust path handling
 
 import requests 
 from PIL import Image 
@@ -39,6 +40,7 @@ def sanitize_for_filename(value: str) -> str:
 class CardBuilder:
     """Class for building card data from Scryfall data"""
     
+    # MODIFIED: Added output_dir to constructor
     def __init__(self, frame_type: str, frame_config: Dict, frame_set: str = "regular", 
                  legendary_crowns: bool = False, auto_fit_art: bool = False, 
                  set_symbol_override: Optional[str] = None, auto_fit_set_symbol: bool = False, 
@@ -50,8 +52,10 @@ class CardBuilder:
                  upscaler_outscale_factor: int = 2, 
                  upscaler_denoise_strength: float = 0.5, 
                  upscaler_face_enhance: bool = False,
+                 # Output Params
                  image_server_base_url: Optional[str] = None, 
-                 image_server_path_prefix: str = "/webdav_images"
+                 image_server_path_prefix: str = "/webdav_images",
+                 output_dir: Optional[str] = None # NEW: Local output directory
                 ):
         self.frame_type = frame_type
         self.frame_config = frame_config
@@ -68,11 +72,18 @@ class CardBuilder:
         self.upscaler_outscale_factor = upscaler_outscale_factor if upscaler_outscale_factor > 0 else 1
         self.upscaler_denoise_strength = upscaler_denoise_strength
         self.upscaler_face_enhance = upscaler_face_enhance
+        
         self.image_server_base_url = image_server_base_url
         self.image_server_path_prefix = "/" + image_server_path_prefix.strip("/") + "/" if image_server_path_prefix else "/"
+        
+        # NEW: Store output directory
+        self.output_dir = output_dir
 
-        if self.upscale_art and (not self.ilaria_upscaler_base_url or not self.image_server_base_url):
-            logger.warning("Upscaling is enabled, but Ilaria or Image Server URL is not configured. Upscaling/hosting may be skipped.")
+        # MODIFIED: Updated warning to include local saving option
+        if self.upscale_art and not self.ilaria_upscaler_base_url:
+            logger.warning("Upscaling is enabled, but --ilaria_base_url is not configured. Upscaling will be skipped.")
+        if self.upscale_art and not self.image_server_base_url and not self.output_dir:
+            logger.warning("Upscaling is enabled, but no output method (server URL or local directory) is configured. Processed art will not be saved.")
 
         self.symbol_placement_lookup = {}
         if self.auto_fit_set_symbol: 
@@ -82,6 +93,7 @@ class CardBuilder:
             except FileNotFoundError: logger.warning("symbol_placements.json not found.")
             except json.JSONDecodeError as e: logger.error(f"Error decoding symbol_placements.json: {e}.")
 
+    # ... (methods from _extract_set_code_from_url to _get_svg_dimensions are unchanged) ...
     def _extract_set_code_from_url(self, url: str) -> Optional[str]:
         if not url: return None
         match = re.search(r'/([\w]+)-[\w]+\.(svg|png)$', url.lower())
@@ -191,22 +203,40 @@ class CardBuilder:
             return "application/octet-stream", "" 
         except Exception: return "application/octet-stream", ""
 
-    def _upscale_image_with_ilaria(self, hosted_original_url: str, filename: str, mime: Optional[str]) -> Optional[bytes]:
+    # MODIFIED: This function now handles both local and remote fetching of the original image
+    def _upscale_image_with_ilaria(self, hosted_original_url_or_path: str, filename: str, mime: Optional[str]) -> Optional[bytes]:
         if not self.ilaria_upscaler_base_url:
             logger.error("Ilaria URL not set.")
             return None
-        if not hosted_original_url:
-            logger.warning(f"No hosted original URL for '{filename}'.")
+        if not hosted_original_url_or_path:
+            logger.warning(f"No hosted original URL or path for '{filename}'.")
+            return None
+
+        img_bytes = None
+        # --- LOCAL MODE: Read from disk ---
+        if self.output_dir:
+            local_path = Path(self.output_dir) / hosted_original_url_or_path.lstrip('/')
+            logger.debug(f"Upscaling: Reading original image from local path: {local_path}")
+            try:
+                with open(local_path, "rb") as f:
+                    img_bytes = f.read()
+            except FileNotFoundError:
+                logger.error(f"Upscaling failed: Original image not found at local path {local_path}")
+                return None
+            except Exception as e:
+                logger.error(f"Upscaling failed: Could not read local file {local_path}: {e}")
+                return None
+        # --- SERVER MODE: Fetch from URL ---
+        else:
+            img_bytes = self._fetch_image_bytes(hosted_original_url_or_path, "Upscaling with gradio_client")
+
+        if not img_bytes:
+            logger.error(f"Failed to get image bytes from {hosted_original_url_or_path}")
             return None
 
         try:
             logger.info(f"Connecting to Ilaria Upscaler via gradio_client.")
             client = Client("TheStinger/Ilaria_Upscaler")
-
-            img_bytes = self._fetch_image_bytes(hosted_original_url, "Upscaling with gradio_client")
-            if not img_bytes:
-                logger.error(f"Failed to download image bytes from {hosted_original_url}")
-                return None
 
             temp_path = f"/tmp/{sanitize_for_filename(filename)}"
             with open(temp_path, "wb") as f:
@@ -251,19 +281,73 @@ class CardBuilder:
         if not path.startswith('/'): path = '/' + path
         return f"{self.image_server_base_url.rstrip('/')}{path}"
 
+    # --- NEW METHOD: Centralized image saving/uploading logic ---
+    def _save_image(self, img_bytes: bytes, sub_dir: str, filename: str) -> Optional[str]:
+        """
+        Saves an image either to a local directory or a WebDAV server.
+        Returns the public-facing URL/path for the CardConjurer JSON.
+        """
+        if not img_bytes:
+            logger.warning(f"No image bytes provided for '{filename}' in '{sub_dir}'. Cannot save.")
+            return None
+
+        # --- LOCAL FILE SYSTEM MODE ---
+        if self.output_dir:
+            try:
+                # Construct the full local path
+                # image_server_path_prefix is reused as the base subdirectory
+                local_save_dir = Path(self.output_dir) / self.image_server_path_prefix.strip('/') / sub_dir.strip('/')
+                local_save_dir.mkdir(parents=True, exist_ok=True)
+                local_file_path = local_save_dir / filename
+
+                # Save the file
+                with open(local_file_path, 'wb') as f:
+                    f.write(img_bytes)
+                
+                logger.info(f"Saved image locally to: {local_file_path}")
+                
+                # Return the relative path for the JSON file
+                relative_path = f"{self.image_server_path_prefix.strip('/')}/{sub_dir.strip('/')}/{filename}"
+                if not relative_path.startswith('/'):
+                    relative_path = '/' + relative_path
+                return relative_path
+
+            except Exception as e:
+                logger.error(f"Local save error for '{filename}': {e}", exc_info=True)
+                return None
+
+        # --- SERVER UPLOAD MODE (Original Logic) ---
+        elif self.image_server_base_url:
+            url = self._construct_nginx_public_url(sub_dir, filename)
+            if not url:
+                logger.error(f"Server URL not set. Cannot host '{filename}'.")
+                return None
+            
+            logger.info(f"Hosting '{filename}' to Nginx: {url}")
+            mime, _ = self._get_image_mime_type_and_extension(img_bytes)
+            headers = {'Content-Type': mime if mime else 'application/octet-stream'}
+            try:
+                r = requests.put(url, data=img_bytes, headers=headers, timeout=60)
+                r.raise_for_status()
+                if 200 <= r.status_code < 300:
+                    logger.info(f"Hosted '{filename}'. URL: {url}")
+                    return url
+                logger.error(f"Nginx hosting error for '{filename}': Status {r.status_code}.")
+                return None
+            except Exception as e:
+                logger.error(f"Nginx hosting error for '{filename}': {e}", exc_info=True)
+                return None
+        
+        # --- NO OUTPUT CONFIGURED ---
+        else:
+            logger.warning(f"No output method configured (local or server). Cannot save '{filename}'.")
+            return None
+
+    # MODIFIED: _host_image_to_nginx_webdav is now a simple wrapper around _save_image
     def _host_image_to_nginx_webdav(self, img_bytes: bytes, sub_dir: str, filename: str) -> Optional[str]:
-        url = self._construct_nginx_public_url(sub_dir, filename)
-        if not url: logger.error(f"Server URL not set. Cannot host '{filename}'."); return None
-        if not img_bytes: logger.warning(f"No bytes for '{filename}'."); return None
-        logger.info(f"Hosting '{filename}' to Nginx: {url}")
-        mime, _ = self._get_image_mime_type_and_extension(img_bytes)
-        headers = {'Content-Type': mime if mime else 'app/octet-stream'}
-        try:
-            r = requests.put(url, data=img_bytes, headers=headers, timeout=60); r.raise_for_status()
-            if 200 <= r.status_code < 300: logger.info(f"Hosted '{filename}'. URL: {url}"); return url
-            logger.error(f"Nginx hosting error for '{filename}': Status {r.status_code}."); return None
-        except Exception as e: logger.error(f"Nginx hosting error for '{filename}': {e}", exc_info=True); return None
-    
+        return self._save_image(img_bytes, sub_dir, filename)
+
+    # ... (methods from _format_path to the end of the file are unchanged) ...
     def _format_path(self, path_format_str: Optional[str], **kwargs) -> str: # From baseline
         if not path_format_str:
             if not ('pt_path_format' in str(kwargs.get('caller_description', '')) and kwargs.get('path_type_optional', False)):
@@ -643,6 +727,7 @@ class CardBuilder:
             art_source_for_dims_log = art_crop_url # For logging where bytes came from
         
             # A. Try to get original art bytes from Nginx for auto-fit
+            # MODIFIED: This check now only runs in server mode
             if self.image_server_base_url:
                 # Check with current best guess for extension, then try others if not found
                 possible_extensions = [original_image_actual_ext] + [ext for ext in ['.jpg', '.png', '.jpeg', '.webp', '.gif'] if ext != original_image_actual_ext]
@@ -679,22 +764,18 @@ class CardBuilder:
                     # original_image_mime_type will be set if ext_from_content is valid
                     if mime: original_image_mime_type = mime
                     
-                    # C. If fetched from Scryfall and Nginx is configured, host it
-                    if self.image_server_base_url:
+                    # C. If fetched from Scryfall and an output method is configured, save/host it
+                    if self.output_dir or self.image_server_base_url:
                         # Use the now determined original_image_actual_ext for the filename
                         filename_to_host = f"{sanitized_card_name}_{set_code_sanitized}_{collector_number_sanitized}{original_image_actual_ext}"
-                        # Check if this correctly-named file ALREADY exists (e.g. from a previous run that guessed ext wrong initially but hosted correctly)
-                        already_hosted_url = self._construct_nginx_public_url("original", filename_to_host)
-                        if self._check_if_file_exists_on_server(already_hosted_url):
-                            hosted_original_art_url = already_hosted_url # Already there with the correct name
-                            logger.info(f"Auto-Fit: Scryfall-fetched art ({filename_to_host}) is already on Nginx. Using existing.")
+                        
+                        # MODIFIED: Use the new _save_image method
+                        temp_hosted_url = self._save_image(original_art_bytes_for_pipeline, "original", filename_to_host)
+                        
+                        if temp_hosted_url:
+                            hosted_original_art_url = temp_hosted_url
                         else:
-                            logger.info(f"Auto-Fit: Hosting Scryfall-fetched art '{filename_to_host}' to Nginx.")
-                            temp_hosted_url = self._host_image_to_nginx_webdav(original_art_bytes_for_pipeline, "original", filename_to_host)
-                            if temp_hosted_url:
-                                hosted_original_art_url = temp_hosted_url
-                            else:
-                                logger.warning(f"Auto-Fit: Failed to host Scryfall-fetched art '{filename_to_host}' to Nginx.")
+                            logger.warning(f"Auto-Fit: Failed to save/host Scryfall-fetched art '{filename_to_host}'.")
                 else:
                     logger.warning(f"Auto-Fit: Failed to fetch art from Scryfall ({art_crop_url}) for dimensions.")
         
@@ -710,39 +791,43 @@ class CardBuilder:
                 logger.warning(f"Auto-Fit: No art bytes obtained for {scryfall_card_name}. Using default art parameters from config.")
         
         # --- 2. Upscaling and Final Art Source Determination ---
-        if self.upscale_art and art_crop_url and self.image_server_base_url and self.ilaria_upscaler_base_url:
+        # MODIFIED: Check for either local or server output
+        if self.upscale_art and art_crop_url and self.ilaria_upscaler_base_url and (self.image_server_base_url or self.output_dir):
             upscaler_model_sanitized = sanitize_for_filename(self.upscaler_model_name)
 
             # NEW: Construct directory name including both model and outscale factor
             # self.upscaler_outscale_factor is ensured to be >= 1 by the constructor
             upscaled_directory_name = f"{upscaler_model_sanitized}-{self.upscaler_outscale_factor}x"
-            logger.info(f"Upscaling: Using Nginx subdirectory '{upscaled_directory_name}' for upscaled images.")
+            logger.info(f"Upscaling: Using subdirectory '{upscaled_directory_name}' for upscaled images.")
 
             # RealESRGAN typically outputs PNG, but we verify after generation
             upscaled_image_check_ext = ".png" 
             base_art_filename_upscaled_check = f"{sanitized_card_name}_{set_code_sanitized}_{collector_number_sanitized}{upscaled_image_check_ext}"
 
             # MODIFIED: Use the new upscaled_directory_name
-            expected_upscaled_url_on_nginx = self._construct_nginx_public_url(upscaled_directory_name, base_art_filename_upscaled_check)
+            # In server mode, this is a full URL. In local mode, this will be a relative path.
+            expected_upscaled_path = self._construct_nginx_public_url(upscaled_directory_name, base_art_filename_upscaled_check) if self.image_server_base_url else f"/{self.image_server_path_prefix.strip('/')}/{upscaled_directory_name}/{base_art_filename_upscaled_check}"
             
             used_existing_upscaled = False
-            # A. Check if upscaled version already exists on Nginx
-            if self._check_if_file_exists_on_server(expected_upscaled_url_on_nginx):
-                logger.info(f"Upscaling: Found existing upscaled art '{base_art_filename_upscaled_check}' in Nginx dir '{upscaled_directory_name}'.")
-                hosted_upscaled_art_url = expected_upscaled_url_on_nginx
+            # A. Check if upscaled version already exists
+            # MODIFIED: Check either server or local file
+            if (self.image_server_base_url and self._check_if_file_exists_on_server(expected_upscaled_path)) or \
+               (self.output_dir and (Path(self.output_dir) / expected_upscaled_path.lstrip('/')).exists()):
+                logger.info(f"Upscaling: Found existing upscaled art '{base_art_filename_upscaled_check}' in subdir '{upscaled_directory_name}'.")
+                hosted_upscaled_art_url = expected_upscaled_path
                 final_art_source_url = hosted_upscaled_art_url
                 used_existing_upscaled = True
                 if self.upscaler_outscale_factor > 0:
                     art_zoom = art_zoom / self.upscaler_outscale_factor
                     logger.info(f"Upscaling: Adjusted artZoom for existing upscaled image to: {art_zoom:.4f} (factor: {self.upscaler_outscale_factor})")
                 
-                # If we used existing upscaled, ensure hosted_original_art_url is also known if original exists on Nginx
-                # (original_image_actual_ext should be correct if auto-fit ran and got bytes)
+                # If we used existing upscaled, ensure hosted_original_art_url is also known if original exists
                 if not hosted_original_art_url: 
                     original_filename_check = f"{sanitized_card_name}_{set_code_sanitized}_{collector_number_sanitized}{original_image_actual_ext}"
-                    potential_original_nginx_url = self._construct_nginx_public_url("original", original_filename_check)
-                    if self._check_if_file_exists_on_server(potential_original_nginx_url):
-                        hosted_original_art_url = potential_original_nginx_url
+                    potential_original_path = self._construct_nginx_public_url("original", original_filename_check) if self.image_server_base_url else f"/{self.image_server_path_prefix.strip('/')}/original/{original_filename_check}"
+                    if (self.image_server_base_url and self._check_if_file_exists_on_server(potential_original_path)) or \
+                       (self.output_dir and (Path(self.output_dir) / potential_original_path.lstrip('/')).exists()):
+                        hosted_original_art_url = potential_original_path
         
             # B. If not using existing upscaled, proceed with upscaling pipeline
             if not used_existing_upscaled:
@@ -774,18 +859,15 @@ class CardBuilder:
                             if ext_from_content: original_image_actual_ext = ext_from_content
                             if mime: original_image_mime_type = mime
                 
-                # B2. Ensure original art is hosted on Nginx if bytes are available and Nginx is configured
-                if original_art_bytes_for_pipeline and self.image_server_base_url and not hosted_original_art_url:
+                # B2. Ensure original art is saved/hosted if bytes are available
+                if original_art_bytes_for_pipeline and not hosted_original_art_url:
                     filename_to_host = f"{sanitized_card_name}_{set_code_sanitized}_{collector_number_sanitized}{original_image_actual_ext}"
-                    already_hosted_url = self._construct_nginx_public_url("original", filename_to_host)
-                    if self._check_if_file_exists_on_server(already_hosted_url):
-                         hosted_original_art_url = already_hosted_url
-                    else:
-                        logger.info(f"Upscaling: Hosting original art '{filename_to_host}' to Nginx for upscaling pipeline.")
-                        temp_hosted_url = self._host_image_to_nginx_webdav(original_art_bytes_for_pipeline, "original", filename_to_host)
-                        if temp_hosted_url: hosted_original_art_url = temp_hosted_url
+                    
+                    # MODIFIED: Use the new _save_image method
+                    temp_hosted_url = self._save_image(original_art_bytes_for_pipeline, "original", filename_to_host)
+                    if temp_hosted_url: hosted_original_art_url = temp_hosted_url
                 
-                # B3. Perform upscaling if original is hosted
+                # B3. Perform upscaling if original is available (hosted or local)
                 if hosted_original_art_url:
                     # Ensure mime type is known for Ilaria (should be if bytes were processed)
                     if not original_image_mime_type and original_art_bytes_for_pipeline:
@@ -800,9 +882,10 @@ class CardBuilder:
                             if not actual_upscaled_ext.startswith('.'): actual_upscaled_ext = '.' + actual_upscaled_ext
                             upscaled_art_filename_to_save = f"{sanitized_card_name}_{set_code_sanitized}_{collector_number_sanitized}{actual_upscaled_ext}"
                             
-                            # MODIFIED: Use the new upscaled_directory_name for log and hosting
-                            logger.info(f"Upscaling: Hosting upscaled art '{upscaled_art_filename_to_save}' to Nginx in dir '{upscaled_directory_name}'.")
-                            temp_hosted_upscaled_url = self._host_image_to_nginx_webdav(upscaled_image_bytes, upscaled_directory_name, upscaled_art_filename_to_save)
+                            # MODIFIED: Use the new _save_image method
+                            logger.info(f"Upscaling: Saving/Hosting upscaled art '{upscaled_art_filename_to_save}' in subdir '{upscaled_directory_name}'.")
+                            temp_hosted_upscaled_url = self._save_image(upscaled_image_bytes, upscaled_directory_name, upscaled_art_filename_to_save)
+                            
                             if temp_hosted_upscaled_url:
                                 hosted_upscaled_art_url = temp_hosted_upscaled_url
                                 final_art_source_url = hosted_upscaled_art_url
@@ -810,27 +893,27 @@ class CardBuilder:
                                     art_zoom = art_zoom / self.upscaler_outscale_factor
                                     logger.info(f"Upscaling: Adjusted artZoom for newly upscaled image to: {art_zoom:.4f}")
                             else: # Failed to host upscaled image
-                                logger.warning(f"Upscaling: Failed to host upscaled art. Falling back to original Nginx art if available.")
+                                logger.warning(f"Upscaling: Failed to save/host upscaled art. Falling back to original art if available.")
                                 if hosted_original_art_url: final_art_source_url = hosted_original_art_url
                                 # else final_art_source_url remains Scryfall URL (art_crop_url) by default
                         else: # Upscaling itself failed
-                            logger.warning(f"Upscaling: Ilaria upscaling failed for {filename_of_hosted_original}. Falling back to original Nginx art if available.")
+                            logger.warning(f"Upscaling: Ilaria upscaling failed for {filename_of_hosted_original}. Falling back to original art if available.")
                             if hosted_original_art_url: final_art_source_url = hosted_original_art_url
                     else: # Mime type for original couldn't be determined for Ilaria
-                        logger.warning(f"Upscaling: Cannot determine MIME type for original art {hosted_original_art_url}. Skipping upscale. Falling back to original Nginx art if available.")
+                        logger.warning(f"Upscaling: Cannot determine MIME type for original art {hosted_original_art_url}. Skipping upscale. Falling back to original art if available.")
                         if hosted_original_art_url: final_art_source_url = hosted_original_art_url
                 elif original_art_bytes_for_pipeline : # Have bytes for original, but it's not hosted (e.g., Nginx not configured or hosting failed)
-                    logger.warning(f"Upscaling: Original art available but not hosted on Nginx. Cannot upscale. Using Scryfall URL as art source.")
+                    logger.warning(f"Upscaling: Original art available but not saved/hosted. Cannot upscale. Using Scryfall URL as art source.")
                     # final_art_source_url remains art_crop_url
                 else: # No original art bytes could be obtained at all
                     logger.warning(f"Upscaling: Cannot obtain or host original art. Cannot upscale. Using Scryfall URL as art source.")
                     # final_art_source_url remains art_crop_url
         
         elif hosted_original_art_url: 
-            # Upscaling not enabled/configured, but auto-fit (or other prior logic) might have successfully hosted an original.
-            # If so, use that Nginx-hosted original as the final source.
+            # Upscaling not enabled/configured, but auto-fit (or other prior logic) might have successfully saved/hosted an original.
+            # If so, use that as the final source.
             final_art_source_url = hosted_original_art_url
-        # else: Upscaling not enabled, no Nginx original found/created, so final_art_source_url remains art_crop_url (the initial default)
+        # else: Upscaling not enabled, no local/hosted original found/created, so final_art_source_url remains art_crop_url (the initial default)
 
         set_symbol_x = self.frame_config.get("set_symbol_x", 0.0); set_symbol_y = self.frame_config.get("set_symbol_y", 0.0); set_symbol_zoom = self.frame_config.get("set_symbol_zoom", 0.1)
         actual_set_code_for_url = self.set_symbol_override.lower() if self.set_symbol_override else set_code_from_scryfall.lower()

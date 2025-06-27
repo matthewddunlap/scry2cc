@@ -29,7 +29,7 @@ class ScryfallCardProcessor:
                  auto_fit_set_symbol: bool = False, 
                  api_delay_seconds: float = 0.1,
                  fetch_basic_land_type: Optional[str] = None,
-                 art_mode: str = "earliest",  # NEW: Art mode
+                 art_mode: str = "earliest",
                  
                  # Upscaling parameters
                  upscale_art: bool = False,
@@ -39,9 +39,12 @@ class ScryfallCardProcessor:
                  upscaler_denoise_strength: float = 0.5,
                  upscaler_face_enhance: bool = False,
                  
-                 # Nginx WebDAV Image Hosting params
+                 # Output parameters
                  image_server_base_url: Optional[str] = None,
-                 image_server_path_prefix: str = "/webdav_images"
+                 image_server_path_prefix: str = "/webdav_images",
+                 
+                 # NEW: Local output directory
+                 output_dir: Optional[str] = None
                 ): 
         
         self.input_file = input_file
@@ -53,7 +56,7 @@ class ScryfallCardProcessor:
         self.auto_fit_set_symbol = auto_fit_set_symbol
         self.api_delay_seconds = api_delay_seconds
         self.fetch_basic_land_type = fetch_basic_land_type 
-        self.art_mode = art_mode  # NEW: Store art mode
+        self.art_mode = art_mode
         
         self.upscale_art = upscale_art
         self.ilaria_upscaler_base_url = ilaria_upscaler_base_url
@@ -64,12 +67,16 @@ class ScryfallCardProcessor:
         
         self.image_server_base_url = image_server_base_url
         self.image_server_path_prefix = image_server_path_prefix
+        
+        # NEW: Store output directory
+        self.output_dir = output_dir
 
-        logger.debug(f"ScryfallCardProcessor __init__: upscale_art='{self.upscale_art}', image_server_base_url='{self.image_server_base_url}', art_mode='{self.art_mode}'")
+        logger.debug(f"ScryfallCardProcessor __init__: upscale_art='{self.upscale_art}', image_server_base_url='{self.image_server_base_url}', art_mode='{self.art_mode}', output_dir='{self.output_dir}'")
 
         self.frame_config = get_frame_config(frame_type)
         self.scryfall_api = ScryfallAPI()  
 
+        # MODIFIED: Pass output_dir to CardBuilder
         self.card_builder = CardBuilder(
             frame_type=self.frame_type, 
             frame_config=self.frame_config, 
@@ -88,7 +95,10 @@ class ScryfallCardProcessor:
             upscaler_face_enhance=self.upscaler_face_enhance,
             
             image_server_base_url=self.image_server_base_url,
-            image_server_path_prefix=self.image_server_path_prefix
+            image_server_path_prefix=self.image_server_path_prefix,
+            
+            # NEW: Pass the output directory
+            output_dir=self.output_dir
         ) 
     
     def format_card_filename(self, card_data: Dict) -> str:
