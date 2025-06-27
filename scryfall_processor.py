@@ -42,9 +42,9 @@ class ScryfallCardProcessor:
                  # Output parameters
                  image_server_base_url: Optional[str] = None,
                  image_server_path_prefix: str = "/webdav_images",
-                 
-                 # NEW: Local output directory
-                 output_dir: Optional[str] = None
+                 output_dir: Optional[str] = None,
+                 # NEW: Card Conjurer URL
+                 cc_url: Optional[str] = None
                 ): 
         
         self.input_file = input_file
@@ -67,16 +67,16 @@ class ScryfallCardProcessor:
         
         self.image_server_base_url = image_server_base_url
         self.image_server_path_prefix = image_server_path_prefix
-        
-        # NEW: Store output directory
         self.output_dir = output_dir
+        # NEW: Store Card Conjurer URL
+        self.cc_url = cc_url
 
-        logger.debug(f"ScryfallCardProcessor __init__: upscale_art='{self.upscale_art}', image_server_base_url='{self.image_server_base_url}', art_mode='{self.art_mode}', output_dir='{self.output_dir}'")
+        logger.debug(f"ScryfallCardProcessor __init__: upscale_art='{self.upscale_art}', image_server_base_url='{self.image_server_base_url}', art_mode='{self.art_mode}', output_dir='{self.output_dir}', cc_url='{self.cc_url}'")
 
         self.frame_config = get_frame_config(frame_type)
         self.scryfall_api = ScryfallAPI()  
 
-        # MODIFIED: Pass output_dir to CardBuilder
+        # MODIFIED: Pass cc_url to CardBuilder
         self.card_builder = CardBuilder(
             frame_type=self.frame_type, 
             frame_config=self.frame_config, 
@@ -97,8 +97,9 @@ class ScryfallCardProcessor:
             image_server_base_url=self.image_server_base_url,
             image_server_path_prefix=self.image_server_path_prefix,
             
-            # NEW: Pass the output directory
-            output_dir=self.output_dir
+            output_dir=self.output_dir,
+            # NEW: Pass the Card Conjurer URL
+            cc_url=self.cc_url
         ) 
     
     def format_card_filename(self, card_data: Dict) -> str:

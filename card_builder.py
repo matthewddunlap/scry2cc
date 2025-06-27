@@ -11,7 +11,7 @@ import time
 import os 
 import base64
 import unicodedata 
-from pathlib import Path # NEW: Import Path for robust path handling
+from pathlib import Path
 
 import requests 
 from PIL import Image 
@@ -40,7 +40,7 @@ def sanitize_for_filename(value: str) -> str:
 class CardBuilder:
     """Class for building card data from Scryfall data"""
     
-    # MODIFIED: Added output_dir to constructor
+    # MODIFIED: Added cc_url to constructor
     def __init__(self, frame_type: str, frame_config: Dict, frame_set: str = "regular", 
                  legendary_crowns: bool = False, auto_fit_art: bool = False, 
                  set_symbol_override: Optional[str] = None, auto_fit_set_symbol: bool = False, 
@@ -55,7 +55,8 @@ class CardBuilder:
                  # Output Params
                  image_server_base_url: Optional[str] = None, 
                  image_server_path_prefix: str = "/webdav_images",
-                 output_dir: Optional[str] = None # NEW: Local output directory
+                 output_dir: Optional[str] = None,
+                 cc_url: Optional[str] = None # NEW: Card Conjurer URL
                 ):
         self.frame_type = frame_type
         self.frame_config = frame_config
@@ -76,10 +77,10 @@ class CardBuilder:
         self.image_server_base_url = image_server_base_url
         self.image_server_path_prefix = "/" + image_server_path_prefix.strip("/") + "/" if image_server_path_prefix else "/"
         
-        # NEW: Store output directory
         self.output_dir = output_dir
+        # NEW: Store Card Conjurer URL
+        self.cc_url = cc_url
 
-        # MODIFIED: Updated warning to include local saving option
         if self.upscale_art and not self.ilaria_upscaler_base_url:
             logger.warning("Upscaling is enabled, but --ilaria_base_url is not configured. Upscaling will be skipped.")
         if self.upscale_art and not self.image_server_base_url and not self.output_dir:
@@ -171,8 +172,6 @@ class CardBuilder:
             response = requests.get(art_url, timeout=10); response.raise_for_status()
             if self.api_delay_seconds > 0 and (not hasattr(response, 'from_cache') or response.from_cache is False if hasattr(response, 'from_cache') else True):
                 time.sleep(self.api_delay_seconds)
-            # This is where baseline _calculate_auto_fit_art_params used to have all its logic
-            # Now it calls the _from_data helper
             return self._calculate_auto_fit_art_params_from_data(response.content, art_url)
         except Exception as e: logger.error(f"Error in _calculate_auto_fit_art_params for {art_url}: {e}", exc_info=True); return None
 
@@ -203,7 +202,6 @@ class CardBuilder:
             return "application/octet-stream", "" 
         except Exception: return "application/octet-stream", ""
 
-    # MODIFIED: This function now handles both local and remote fetching of the original image
     def _upscale_image_with_ilaria(self, hosted_original_url_or_path: str, filename: str, mime: Optional[str]) -> Optional[bytes]:
         if not self.ilaria_upscaler_base_url:
             logger.error("Ilaria URL not set.")
@@ -281,7 +279,7 @@ class CardBuilder:
         if not path.startswith('/'): path = '/' + path
         return f"{self.image_server_base_url.rstrip('/')}{path}"
 
-    # --- NEW METHOD: Centralized image saving/uploading logic ---
+    # --- MODIFIED METHOD: Centralized image saving/uploading logic ---
     def _save_image(self, img_bytes: bytes, sub_dir: str, filename: str) -> Optional[str]:
         """
         Saves an image either to a local directory or a WebDAV server.
@@ -294,23 +292,29 @@ class CardBuilder:
         # --- LOCAL FILE SYSTEM MODE ---
         if self.output_dir:
             try:
-                # Construct the full local path
-                # image_server_path_prefix is reused as the base subdirectory
                 local_save_dir = Path(self.output_dir) / self.image_server_path_prefix.strip('/') / sub_dir.strip('/')
                 local_save_dir.mkdir(parents=True, exist_ok=True)
                 local_file_path = local_save_dir / filename
 
-                # Save the file
                 with open(local_file_path, 'wb') as f:
                     f.write(img_bytes)
                 
                 logger.info(f"Saved image locally to: {local_file_path}")
                 
-                # Return the relative path for the JSON file
+                # Construct the relative path first
                 relative_path = f"{self.image_server_path_prefix.strip('/')}/{sub_dir.strip('/')}/{filename}"
                 if not relative_path.startswith('/'):
                     relative_path = '/' + relative_path
-                return relative_path
+                
+                # If cc_url is provided, construct the full public URL for the JSON
+                if self.cc_url:
+                    full_url = f"{self.cc_url.rstrip('/')}{relative_path}"
+                    logger.debug(f"Constructed full URL for JSON: {full_url}")
+                    return full_url
+                else:
+                    # This case should be prevented by validation in scry2cc.py
+                    logger.warning(f"Local save mode is active but --cc-url was not provided. Returning relative path: {relative_path}")
+                    return relative_path
 
             except Exception as e:
                 logger.error(f"Local save error for '{filename}': {e}", exc_info=True)
@@ -343,11 +347,10 @@ class CardBuilder:
             logger.warning(f"No output method configured (local or server). Cannot save '{filename}'.")
             return None
 
-    # MODIFIED: _host_image_to_nginx_webdav is now a simple wrapper around _save_image
     def _host_image_to_nginx_webdav(self, img_bytes: bytes, sub_dir: str, filename: str) -> Optional[str]:
         return self._save_image(img_bytes, sub_dir, filename)
 
-    # ... (methods from _format_path to the end of the file are unchanged) ...
+    # ... (rest of the file is unchanged) ...
     def _format_path(self, path_format_str: Optional[str], **kwargs) -> str: # From baseline
         if not path_format_str:
             if not ('pt_path_format' in str(kwargs.get('caller_description', '')) and kwargs.get('path_type_optional', False)):
@@ -358,7 +361,6 @@ class CardBuilder:
         except KeyError as e: logger.error(f"KeyError formatting path '{path_format_str}' with effectively used args {valid_args} (original args: {kwargs}): {e}"); return "/img/error_path_key_error.png"
         except Exception as e_gen: logger.error(f"Generic error formatting path '{path_format_str}' with args {valid_args}: {e_gen}"); return "/img/error_path_generic.png"
 
-    # --- PASTE YOUR BASELINE FRAME BUILDERS HERE ---
     def build_frame_path(self, color_code: str) -> str:
         return self._format_path(
             self.frame_config.get("frame_path_format"),
@@ -814,7 +816,13 @@ class CardBuilder:
             if (self.image_server_base_url and self._check_if_file_exists_on_server(expected_upscaled_path)) or \
                (self.output_dir and (Path(self.output_dir) / expected_upscaled_path.lstrip('/')).exists()):
                 logger.info(f"Upscaling: Found existing upscaled art '{base_art_filename_upscaled_check}' in subdir '{upscaled_directory_name}'.")
-                hosted_upscaled_art_url = expected_upscaled_path
+                
+                # MODIFIED: Construct full URL if in local mode
+                if self.output_dir and self.cc_url:
+                    hosted_upscaled_art_url = f"{self.cc_url.rstrip('/')}{expected_upscaled_path}"
+                else:
+                    hosted_upscaled_art_url = expected_upscaled_path
+
                 final_art_source_url = hosted_upscaled_art_url
                 used_existing_upscaled = True
                 if self.upscaler_outscale_factor > 0:
@@ -827,7 +835,10 @@ class CardBuilder:
                     potential_original_path = self._construct_nginx_public_url("original", original_filename_check) if self.image_server_base_url else f"/{self.image_server_path_prefix.strip('/')}/original/{original_filename_check}"
                     if (self.image_server_base_url and self._check_if_file_exists_on_server(potential_original_path)) or \
                        (self.output_dir and (Path(self.output_dir) / potential_original_path.lstrip('/')).exists()):
-                        hosted_original_art_url = potential_original_path
+                        if self.output_dir and self.cc_url:
+                            hosted_original_art_url = f"{self.cc_url.rstrip('/')}{potential_original_path}"
+                        else:
+                            hosted_original_art_url = potential_original_path
         
             # B. If not using existing upscaled, proceed with upscaling pipeline
             if not used_existing_upscaled:
