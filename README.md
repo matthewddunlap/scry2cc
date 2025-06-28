@@ -34,8 +34,10 @@ python3 scry2cc.py --frame seventh --auto_fit_art --auto_fit_set_symbol --output
 
 Same as above but save the original art to local webserver.
 ```
-python3 scry2cc.py --image_server_base_url http://mywebserver:4242 --image_server_path_prefix local_art --frame seventh --auto_fit_art --auto_fit_set_symbol --output_file myDeck.cardconjurer myDeck.txt
+python3 scry2cc.py --upload-to-server --image-server-base-url http://my-card-conjuer:4242 --image-server-path-prefix /local_art --frame seventh --auto_fit_art --auto_fit_set_symbol --output_file myDeck.cardconjurer myDeck.txt
 ```
+
+Subsequent runs can then use the original art saved locally instead of fetching from Scryfall again.
 
 
 ### Create Card Conjurer save file for import of all unique art prints of forest
@@ -46,5 +48,5 @@ python3 scry2cc.py --frame seventh --auto_fit_art --auto_fit_set_symbol --fetch_
 
 Same as above but upscale the art and save both the original and the upscaled art to local webserver.
 ```
-python3 scry2cc.py --ilaria_base_url https://thestinger-ilaria-upscaler.hf.space --upscaler_model_name RealESRGAN_x2plus --upscaler_outscale_factor 4 --frame seventh --auto_fit_art --auto_fit_set_symbol --fetch_basic_land Forest --output_file forest.cardconjurer
+python3 scry2cc.py --ilaria_base_url https://thestinger-ilaria-upscaler.hf.space --upscaler_model_name RealESRGAN_x2plus --upscaler_outscale_factor 4 --upload-to-server --image-server-base-url http://my-card-conjurer:4242 --image-server-path-prefix /local_art --frame seventh --auto_fit_art --auto_fit_set_symbol --fetch_basic_land Forest --output_file forest.cardconjurer
 ```
