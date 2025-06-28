@@ -41,10 +41,9 @@ class ScryfallCardProcessor:
                  
                  # Output parameters
                  image_server_base_url: Optional[str] = None,
-                 image_server_path_prefix: str = "/webdav_images",
+                 image_server_path_prefix: str = "/local_art",
                  output_dir: Optional[str] = None,
-                 # NEW: Card Conjurer URL
-                 cc_url: Optional[str] = None
+                 upload_to_server: bool = False
                 ): 
         
         self.input_file = input_file
@@ -68,15 +67,13 @@ class ScryfallCardProcessor:
         self.image_server_base_url = image_server_base_url
         self.image_server_path_prefix = image_server_path_prefix
         self.output_dir = output_dir
-        # NEW: Store Card Conjurer URL
-        self.cc_url = cc_url
+        self.upload_to_server = upload_to_server
 
-        logger.debug(f"ScryfallCardProcessor __init__: upscale_art='{self.upscale_art}', image_server_base_url='{self.image_server_base_url}', art_mode='{self.art_mode}', output_dir='{self.output_dir}', cc_url='{self.cc_url}'")
+        logger.debug(f"ScryfallCardProcessor __init__: upscale_art='{self.upscale_art}', image_server_base_url='{self.image_server_base_url}', output_dir='{self.output_dir}', upload_to_server='{self.upload_to_server}'")
 
         self.frame_config = get_frame_config(frame_type)
         self.scryfall_api = ScryfallAPI()  
 
-        # MODIFIED: Pass cc_url to CardBuilder
         self.card_builder = CardBuilder(
             frame_type=self.frame_type, 
             frame_config=self.frame_config, 
@@ -98,31 +95,20 @@ class ScryfallCardProcessor:
             image_server_path_prefix=self.image_server_path_prefix,
             
             output_dir=self.output_dir,
-            # NEW: Pass the Card Conjurer URL
-            cc_url=self.cc_url
+            upload_to_server=self.upload_to_server
         ) 
     
     def format_card_filename(self, card_data: Dict) -> str:
-        """
-        Format card data into filename: [card-name]_[set]_[number]
-        - card name has spaces replaced with dashes
-        - special characters removed/replaced
-        - all lowercase
-        - delimited with underscores
-        NOTE: No .png extension added here as it's handled downstream
-        """
         import re
         
         card_name = card_data.get('name', 'unknown')
         set_code = card_data.get('set', 'unk')
         collector_number = card_data.get('collector_number', '0')
         
-        # Clean card name: lowercase, replace spaces with dashes, remove special chars
-        clean_name = re.sub(r'[^\w\s-]', '', card_name.lower())  # Remove special chars except spaces and dashes
-        clean_name = re.sub(r'\s+', '-', clean_name.strip())     # Replace spaces with dashes
-        clean_name = re.sub(r'-+', '-', clean_name)              # Collapse multiple dashes
+        clean_name = re.sub(r'[^\w\s-]', '', card_name.lower())
+        clean_name = re.sub(r'\s+', '-', clean_name.strip())
+        clean_name = re.sub(r'-+', '-', clean_name)
         
-        # Clean set code and collector number
         clean_set = set_code.lower()
         clean_number = collector_number
         
@@ -145,10 +131,6 @@ class ScryfallCardProcessor:
         except Exception as e: logger.error(f"Error reading {self.input_file}: {e}"); return []
     
     def get_card_data_by_art_mode(self, card_name: str) -> List[Dict]:
-        """
-        Get card data based on the art mode.
-        Returns a list of card data objects (single item for earliest/latest, multiple for all_art).
-        """
         if self.art_mode == "earliest":
             card_data = self.scryfall_api.get_earliest_printing(card_name)
             return [card_data] if card_data else []
@@ -183,27 +165,21 @@ class ScryfallCardProcessor:
             is_basic = item["is_basic_land_fetch_item"]
             
             if is_basic:
-                # Basic land fetch mode - use existing logic
                 scryfall_data_list = [item["card_data_obj"]]
             else:
-                # File mode - use art mode
                 scryfall_data_list = self.get_card_data_by_art_mode(item["name_to_fetch"])
             
             if not scryfall_data_list:
                 logger.warning(f"No Scryfall data for '{card_key}', skipping.")
                 continue
             
-            # Process each card data object (multiple for all_art mode)
             for j, scryfall_data in enumerate(scryfall_data_list):
-                # Create unique key for each printing when using all_art mode
                 if len(scryfall_data_list) > 1:
-                    # Format: [card-name]_[set]_[number].png
                     printing_key = self.format_card_filename(scryfall_data)
                     log_prefix = f"Card from file ({i+1}/{len(items_to_process)}, art {j+1}/{len(scryfall_data_list)})"
                 else:
-                    # For single printings, still use the new format for consistency
                     if is_basic:
-                        printing_key = card_key  # Keep original format for basic lands
+                        printing_key = card_key
                     else:
                         printing_key = self.format_card_filename(scryfall_data)
                     log_prefix = f"Basic land ({i+1}/{len(items_to_process)})" if is_basic else f"Card from file ({i+1}/{len(items_to_process)})"
@@ -223,11 +199,9 @@ class ScryfallCardProcessor:
                 except Exception as e: 
                     logger.error(f"Error processing '{printing_key}': {e}", exc_info=True)
                 
-                # Add delay between individual printings when processing multiple arts
                 if self.api_delay_seconds > 0 and j < len(scryfall_data_list) - 1:
                     time.sleep(self.api_delay_seconds)
             
-            # Add delay between different cards
             if self.api_delay_seconds > 0 and i < len(items_to_process) - 1:
                 time.sleep(self.api_delay_seconds)
         return result

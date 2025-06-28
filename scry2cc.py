@@ -21,7 +21,6 @@ init_logging()
 logger = logging.getLogger(__name__)
 
 def main():
-    # MODIFIED: Updated description
     parser = argparse.ArgumentParser(description='Process MTG cards and create CardConjurer JSON. Provide EITHER an input_file OR --fetch_basic_land.')
     
     parser.add_argument('input_file', nargs='?', default=None, 
@@ -52,21 +51,20 @@ def main():
     upscaling_group.add_argument('--upscaler_denoise_strength', type=float, default=0.5, help='Denoise strength (default: 0.5).')
     upscaling_group.add_argument('--upscaler_face_enhance', action='store_true', help='Enable face enhancement (default: False).')
 
-    # MODIFIED: Renamed group for clarity
     output_options_group = parser.add_argument_group('Output Options (for processed art)')
     
-    # NEW: Argument for local directory output
-    output_options_group.add_argument('--output-dir', type=str, default=None,
-                                      help='Local directory to save images to. If provided, server upload is skipped.')
+    # URL Construction (now optional, but required by some actions)
+    output_options_group.add_argument('--image-server-base-url', type=str,
+                                      help='Base URL for the art in the final JSON (e.g., http://mtgproxy:4242). Required if saving or uploading art.')
+    output_options_group.add_argument('--image-server-path-prefix', type=str, default="/local_art",
+                                      help='Base path for the art URL (default: /local_art). Used for both URL construction and as a subdirectory for local saving.')
 
-    # NEW: Argument for the Card Conjurer-facing URL when saving locally
-    output_options_group.add_argument('--cc-url', type=str, default=None,
-                                      help='The base URL that Card Conjurer will use to access the art. Required when using --output-dir.')
-    
-    output_options_group.add_argument('--image_server_base_url', type=str, default=None, 
-                                      help='Base URL of the image server (e.g., http://localhost:8088).')
-    output_options_group.add_argument('--image_server_path_prefix', type=str, default="/local_art",
-                                      help='Base path prefix on image server (default: /local_art) or subdirectory in --output-dir.')
+    # Output Action (mutually exclusive)
+    action_group = output_options_group.add_mutually_exclusive_group()
+    action_group.add_argument('--output-dir', type=str, default=None,
+                              help='Save images to this local directory.')
+    action_group.add_argument('--upload-to-server', action='store_true',
+                              help='Upload images to the server specified by --image-server-base-url.')
     
     args = parser.parse_args()
     logger.debug(f"Parsed args: {args}") 
@@ -74,18 +72,20 @@ def main():
     if not args.input_file and not args.fetch_basic_land:
         parser.error("Either an input_file or --fetch_basic_land must be specified.")
     
-    # --- MODIFIED: Updated validation logic for output ---
-    if not args.output_dir and not args.image_server_base_url:
-        parser.error("You must provide an output destination for the images: either --output-dir (with --cc-url) for local saving, or --image_server_base_url for server upload.")
+    # --- MODIFIED: More nuanced validation logic ---
+    # If upscaling, you must provide a destination.
+    if args.upscale_art and not (args.output_dir or args.upload_to_server):
+        parser.error("--upscale_art requires an output destination. Please specify either --output-dir or --upload-to-server.")
 
-    if args.output_dir and not args.cc_url:
-        parser.error("--cc-url is required when using --output-dir.")
+    # If you specify a destination (local or remote), you must provide the base URL for the JSON.
+    if (args.output_dir or args.upload_to_server) and not args.image_server_base_url:
+        parser.error("--image-server-base-url is required when using --output-dir or --upload-to-server.")
 
+    # Upscaling also requires the upscaler URL.
     if args.upscale_art and not args.ilaria_base_url:
         parser.error("--ilaria_base_url is required when --upscale_art is enabled.")
     # --- END MODIFICATION ---
-
-    # MODIFIED: Pass the new output_dir argument
+    
     processor = ScryfallCardProcessor(
         input_file=args.input_file if not args.fetch_basic_land else None, 
         frame_type=args.frame, 
@@ -108,10 +108,8 @@ def main():
         image_server_base_url=args.image_server_base_url,
         image_server_path_prefix=args.image_server_path_prefix,
         
-        # NEW: Pass the output directory
         output_dir=args.output_dir,
-        # NEW: Pass the Card Conjurer URL
-        cc_url=args.cc_url
+        upload_to_server=args.upload_to_server
     )
     result = processor.process_cards()
     processor.save_output(args.output_file, result)
