@@ -51,6 +51,15 @@ class ScryfallAPI:
             logger.error(f"Unexpected error getting set data for '{set_code}': {e}")
             return None
 
+    def _apply_set_filters(self, query: str, set_include: Optional[List[str]] = None, set_exclude: Optional[List[str]] = None) -> str:
+        if set_include:
+            include_query = " OR ".join([f"set:{s}" for s in set_include])
+            query += f" ({include_query})"
+        elif set_exclude:
+            exclude_query = " ".join([f"-set:{s}" for s in set_exclude])
+            query += f" {exclude_query}"
+        return query
+
     # --- MODIFIED search_cards to handle pagination and return List[Dict] ---
     def search_cards(self, query: str, unique="prints", order_by="released", direction="asc") -> List[Dict]:
         """Search for cards using the Scryfall API. Returns a list of all cards matching the query by handling pagination."""
@@ -92,7 +101,10 @@ class ScryfallAPI:
                     # logger.debug("No more pages found.")
 
             except requests.exceptions.HTTPError as http_err:
-                logger.error(f"HTTP error occurred while searching cards (query: '{query}', page: {page_num}): {http_err} - {response.text if response else 'No response text'}")
+                if http_err.response.status_code == 404:
+                    logger.warning(f"No cards found for query: {query}")
+                else:
+                    logger.error(f"HTTP error occurred while searching cards (query: '{query}', page: {page_num}): {http_err} - {http_err.response.text}")
                 break 
             except requests.RequestException as req_err:
                 logger.error(f"Request error occurred while searching cards (query: '{query}', page: {page_num}): {req_err}")
@@ -105,94 +117,98 @@ class ScryfallAPI:
              logger.info(f"Found {len(all_cards)} total cards across {page_num-1} page(s) for query: {query}")
         return all_cards
 
-    def get_earliest_printing(self, card_name: str) -> Optional[Dict]:
-        """Get the earliest printing of a card by name."""
+    def get_earliest_printing(self, card_name: str, set_include: Optional[List[str]] = None, set_exclude: Optional[List[str]] = None) -> Optional[Dict]:
+        """Get the earliest printing of a card by name, optionally filtered by sets."""
         try:
             card_data = self.get_card_by_name(card_name)
             if not card_data or 'oracle_id' not in card_data:
-                return None # Error logged in get_card_by_name
+                return None
             
             oracle_id = card_data['oracle_id']
+            query = f"oracle_id:{oracle_id}"
+            query = self._apply_set_filters(query, set_include, set_exclude)
             
-            # search_cards now returns List[Dict]
-            search_results_list = self.search_cards(f"oracle_id:{oracle_id}", "prints", "released", "asc")
+            search_results_list = self.search_cards(query, "prints", "released", "asc")
             
-            if search_results_list: # Check if the list is not empty
+            if search_results_list:
                 earliest_card = search_results_list[0]
                 set_code = earliest_card.get('set')
                 if set_code:
                     set_data = self.get_set_data(set_code)
                     if set_data and 'released_at' in set_data:
-                        logger.info(f"Confirmed earliest printing of '{card_name}': {set_code} ({set_data['released_at']})")
+                        logger.info(f"Confirmed earliest printing of '{card_name}' within filters: {set_code} ({set_data['released_at']})")
                 return earliest_card
             else:
-                logger.error(f"No printings found for card '{card_name}' with oracle_id {oracle_id}") # Adjusted log
+                logger.warning(f"No printings found for card '{card_name}' with oracle_id {oracle_id} within the specified set filters.")
                 return None
         except Exception as e:
             logger.error(f"Unexpected error getting earliest printing for '{card_name}': {e}")
             return None
 
-    def get_latest_printing(self, card_name: str) -> Optional[Dict]:
-        """Get the latest printing of a card by name."""
+    def get_latest_printing(self, card_name: str, set_include: Optional[List[str]] = None, set_exclude: Optional[List[str]] = None) -> Optional[Dict]:
+        """Get the latest printing of a card by name, optionally filtered by sets."""
         try:
             card_data = self.get_card_by_name(card_name)
             if not card_data or 'oracle_id' not in card_data:
-                return None # Error logged in get_card_by_name
+                return None
             
             oracle_id = card_data['oracle_id']
+            query = f"oracle_id:{oracle_id}"
+            query = self._apply_set_filters(query, set_include, set_exclude)
             
-            # Search for all printings, ordered by release date descending to get latest first
-            search_results_list = self.search_cards(f"oracle_id:{oracle_id}", "prints", "released", "desc")
+            search_results_list = self.search_cards(query, "prints", "released", "desc")
             
-            if search_results_list: # Check if the list is not empty
+            if search_results_list:
                 latest_card = search_results_list[0]
                 set_code = latest_card.get('set')
                 if set_code:
                     set_data = self.get_set_data(set_code)
                     if set_data and 'released_at' in set_data:
-                        logger.info(f"Confirmed latest printing of '{card_name}': {set_code} ({set_data['released_at']})")
+                        logger.info(f"Confirmed latest printing of '{card_name}' within filters: {set_code} ({set_data['released_at']})")
                 return latest_card
             else:
-                logger.error(f"No printings found for card '{card_name}' with oracle_id {oracle_id}")
+                logger.warning(f"No printings found for card '{card_name}' with oracle_id {oracle_id} within the specified set filters.")
                 return None
         except Exception as e:
             logger.error(f"Unexpected error getting latest printing for '{card_name}': {e}")
             return None
 
-    def get_all_art_printings(self, card_name: str) -> List[Dict]:
-        """Get all unique art printings of a card by name."""
+    def get_all_art_printings(self, card_name: str, set_include: Optional[List[str]] = None, set_exclude: Optional[List[str]] = None) -> List[Dict]:
+        """Get all unique art printings of a card by name, optionally filtered by sets."""
         try:
             card_data = self.get_card_by_name(card_name)
             if not card_data or 'oracle_id' not in card_data:
-                return [] # Error logged in get_card_by_name
+                return []
             
             oracle_id = card_data['oracle_id']
+            query = f"oracle_id:{oracle_id}"
+            query = self._apply_set_filters(query, set_include, set_exclude)
             
-            # Search for all printings, unique by art, ordered by release date ascending
-            search_results_list = self.search_cards(f"oracle_id:{oracle_id}", "art", "released", "asc")
+            search_results_list = self.search_cards(query, "art", "released", "asc")
             
             if search_results_list:
-                logger.info(f"Found {len(search_results_list)} unique art printings for '{card_name}'")
+                logger.info(f"Found {len(search_results_list)} unique art printings for '{card_name}' within the specified set filters.")
                 return search_results_list
             else:
-                logger.error(f"No printings found for card '{card_name}' with oracle_id {oracle_id}")
+                logger.warning(f"No printings found for card '{card_name}' with oracle_id {oracle_id} within the specified set filters.")
                 return []
         except Exception as e:
             logger.error(f"Unexpected error getting all art printings for '{card_name}': {e}")
             return []
 
-    # --- EXISTING METHOD for Basic Lands ---
-    def get_all_printings_of_basic_land(self, land_name: str) -> List[Dict]:
+    def get_all_printings_of_basic_land(self, land_name: str, set_include: Optional[List[str]] = None, set_exclude: Optional[List[str]] = None) -> List[Dict]:
         """
-        Fetches all non-full-art printings of a specific basic land type, unique by art.
+        Fetches all non-full-art printings of a specific basic land type, unique by art, optionally filtered by sets.
         Example land_name: "Forest", "Island", etc.
         """
         query = f'!"{land_name}" type:basic is:notfullart'
+        query = self._apply_set_filters(query, set_include, set_exclude)
+        
         unique_strategy = "art"
         order_strategy = "released" 
         direction_strategy = "asc"  
 
-        logger.info(f"Fetching all non-full-art printings (unique by art) for basic land: {land_name} (Query: {query})")
+        logger.info(f"Fetching basic land printings with query: {query}")
         
         all_printings = self.search_cards(
             query=query, 
@@ -202,6 +218,6 @@ class ScryfallAPI:
         )
         
         if not all_printings:
-            logger.warning(f"No non-full-art printings found for basic land '{land_name}'.")
+            logger.warning(f"No non-full-art printings found for basic land '{land_name}' with the specified filters.")
         
         return all_printings

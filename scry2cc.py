@@ -38,10 +38,17 @@ def main():
     parser.add_argument('--fetch_basic_land', type=str, default=None, 
                         choices=['Forest', 'Island', 'Mountain', 'Plains', 'Swamp'],
                         help='Fetch all non-full-art printings (unique by art) of a specific basic land type. If used, input_file is ignored.')
-    
-    parser.add_argument('--art_mode', type=str, default='earliest', 
+
+    art_selection_group = parser.add_argument_group('Art Selection Options')
+    art_selection_group.add_argument('--art-mode', type=str, default='earliest', 
                         choices=['earliest', 'latest', 'all_art'],
                         help='Art selection mode: earliest (default), latest, or all_art (all unique art versions)')
+    
+    set_filter_group = art_selection_group.add_mutually_exclusive_group()
+    set_filter_group.add_argument('--set-include', type=str, default=None,
+                                help='Comma-separated list of set codes to exclusively pull art from (e.g., "lea,leb,2ed").')
+    set_filter_group.add_argument('--set-exclude', type=str, default=None,
+                                help='Comma-separated list of set codes to exclude art from (e.g., "alpha,beta").')
 
     upscaling_group = parser.add_argument_group('Upscaling Options')
     upscaling_group.add_argument('--upscale_art', action='store_true', help='Enable art upscaling via Ilaria Upscaler.')
@@ -86,6 +93,9 @@ def main():
         parser.error("--ilaria_base_url is required when --upscale_art is enabled.")
     # --- END MODIFICATION ---
     
+    set_include_list = [s.strip().lower() for s in args.set_include.split(',')] if args.set_include else None
+    set_exclude_list = [s.strip().lower() for s in args.set_exclude.split(',')] if args.set_exclude else None
+
     processor = ScryfallCardProcessor(
         input_file=args.input_file if not args.fetch_basic_land else None, 
         frame_type=args.frame, 
@@ -97,6 +107,8 @@ def main():
         api_delay_seconds=max(0, args.api_delay_ms / 1000.0),
         fetch_basic_land_type=args.fetch_basic_land,
         art_mode=args.art_mode,
+        set_include=set_include_list,
+        set_exclude=set_exclude_list,
         
         upscale_art=args.upscale_art,
         ilaria_upscaler_base_url=args.ilaria_base_url,

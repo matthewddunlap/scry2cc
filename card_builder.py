@@ -235,7 +235,7 @@ class CardBuilder:
 
         try:
             logger.info(f"Connecting to Ilaria Upscaler via gradio_client.")
-            client = Client("TheStinger/Ilaria_Upscaler")
+            client = Client(self.ilaria_upscaler_base_url)
 
             temp_path = f"/tmp/{sanitize_for_filename(filename)}"
             with open(temp_path, "wb") as f:

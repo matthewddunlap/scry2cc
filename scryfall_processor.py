@@ -30,6 +30,8 @@ class ScryfallCardProcessor:
                  api_delay_seconds: float = 0.1,
                  fetch_basic_land_type: Optional[str] = None,
                  art_mode: str = "earliest",
+                 set_include: Optional[List[str]] = None,
+                 set_exclude: Optional[List[str]] = None,
                  
                  # Upscaling parameters
                  upscale_art: bool = False,
@@ -56,6 +58,8 @@ class ScryfallCardProcessor:
         self.api_delay_seconds = api_delay_seconds
         self.fetch_basic_land_type = fetch_basic_land_type 
         self.art_mode = art_mode
+        self.set_include = set_include
+        self.set_exclude = set_exclude
         
         self.upscale_art = upscale_art
         self.ilaria_upscaler_base_url = ilaria_upscaler_base_url
@@ -115,7 +119,7 @@ class ScryfallCardProcessor:
         return f"{clean_name}_{clean_set}_{clean_number}"
     
     def load_cards_from_file(self) -> List[str]:
-        card_names = []
+        card_names = set()
         if not self.input_file: return []
         try:
             with open(self.input_file, 'r', encoding='utf-8') as file:
@@ -125,20 +129,20 @@ class ScryfallCardProcessor:
                     if match: card_name = match.group(1).strip()
                     elif processed_line and not processed_line.startswith('#') and not processed_line.isspace(): card_name = processed_line
                     else: continue
-                    if card_name: card_names.append(card_name)
-            logger.info(f"Loaded {len(card_names)} patterns from: {self.input_file}")
-            return card_names
+                    if card_name: card_names.add(card_name)
+            logger.info(f"Loaded {len(card_names)} unique patterns from: {self.input_file}")
+            return list(card_names)
         except Exception as e: logger.error(f"Error reading {self.input_file}: {e}"); return []
     
     def get_card_data_by_art_mode(self, card_name: str) -> List[Dict]:
         if self.art_mode == "earliest":
-            card_data = self.scryfall_api.get_earliest_printing(card_name)
+            card_data = self.scryfall_api.get_earliest_printing(card_name, set_include=self.set_include, set_exclude=self.set_exclude)
             return [card_data] if card_data else []
         elif self.art_mode == "latest":
-            card_data = self.scryfall_api.get_latest_printing(card_name)
+            card_data = self.scryfall_api.get_latest_printing(card_name, set_include=self.set_include, set_exclude=self.set_exclude)
             return [card_data] if card_data else []
         elif self.art_mode == "all_art":
-            return self.scryfall_api.get_all_art_printings(card_name)
+            return self.scryfall_api.get_all_art_printings(card_name, set_include=self.set_include, set_exclude=self.set_exclude)
         else:
             logger.error(f"Unknown art mode: {self.art_mode}")
             return []
@@ -147,7 +151,7 @@ class ScryfallCardProcessor:
         items_to_process = [] 
         if self.fetch_basic_land_type:
             logger.info(f"Mode: Fetching basic land: {self.fetch_basic_land_type}")
-            for printing_data in self.scryfall_api.get_all_printings_of_basic_land(self.fetch_basic_land_type):
+            for printing_data in self.scryfall_api.get_all_printings_of_basic_land(self.fetch_basic_land_type, set_include=self.set_include, set_exclude=self.set_exclude):
                 name = printing_data.get("name", self.fetch_basic_land_type)
                 key = f"{name}-{printing_data.get('set', 'UNK')}-{printing_data.get('collector_number', '0')}"
                 items_to_process.append({"key_name": key, "card_data_obj": printing_data, "is_basic_land_fetch_item": True})
@@ -211,3 +215,4 @@ class ScryfallCardProcessor:
             with open(output_file, 'w', encoding='utf-8') as f: json.dump(data, f, indent=2)
             logger.info(f"Output saved to {output_file}")
         except Exception as e: logger.error(f"Error saving output: {e}")
+

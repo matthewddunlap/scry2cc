@@ -50,3 +50,6 @@ Same as above but upscale the art and save both the original and the upscaled ar
 ```
 python3 scry2cc.py --ilaria_base_url https://thestinger-ilaria-upscaler.hf.space --upscaler_model_name RealESRGAN_x2plus --upscaler_outscale_factor 4 --upload-to-server --image-server-base-url http://my-card-conjurer:4242 --image-server-path-prefix /local_art --frame seventh --auto_fit_art --auto_fit_set_symbol --fetch_basic_land Forest --output_file forest.cardconjurer
 ```
+python3 scry2cc.py --frame seventh --art_mode earliest --auto_fit_art --auto_fit_set_symbol --image-server-base-url http://mtgproxy:4242 --image-server-path-prefix /local_art/ --art_mode all_art --upscale_art --upload-to-server --ilaria_base_url http://172.17.1.217:7860 --upscaler_model_name RealESRGAN_x2plus --upscaler_outscale_factor 4 --output_file forgetful-fish.cardconjurer forgetful-fish.txt
+
+python3 ccDownloader.py --url http://mtgproxy:4242 --auto-fit-art --auto-fit-set-symbol --headless --frame seventh --upload-to-server --image-server-base-url http://mtgproxy:4242 --output-server-path local_art/card_images/7th/realesrgan_x2plus-4x/ --file /data/scry2cc/forest.cardconjurer --upload-timeout 900 --log-level DEBUG --overwrite-server-file
