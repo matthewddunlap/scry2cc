@@ -16,6 +16,7 @@ from config import (
     DEFAULT_API_DELAY_MS 
 )
 from scryfall_processor import ScryfallCardProcessor
+from exceptions import Scry2CCException
 
 init_logging()
 logger = logging.getLogger(__name__)
@@ -96,35 +97,44 @@ def main():
     set_include_list = [s.strip().lower() for s in args.set_include.split(',')] if args.set_include else None
     set_exclude_list = [s.strip().lower() for s in args.set_exclude.split(',')] if args.set_exclude else None
 
-    processor = ScryfallCardProcessor(
-        input_file=args.input_file if not args.fetch_basic_land else None, 
-        frame_type=args.frame, 
-        frame_set=args.frame_set, 
-        legendary_crowns=args.legendary_crowns, 
-        auto_fit_art=args.auto_fit_art,
-        set_symbol_override=args.set_symbol_override,
-        auto_fit_set_symbol=args.auto_fit_set_symbol,
-        api_delay_seconds=max(0, args.api_delay_ms / 1000.0),
-        fetch_basic_land_type=args.fetch_basic_land,
-        art_mode=args.art_mode,
-        set_include=set_include_list,
-        set_exclude=set_exclude_list,
-        
-        upscale_art=args.upscale_art,
-        ilaria_upscaler_base_url=args.ilaria_base_url,
-        upscaler_model_name=args.upscaler_model_name,
-        upscaler_outscale_factor=args.upscaler_outscale_factor,
-        upscaler_denoise_strength=args.upscaler_denoise_strength,
-        upscaler_face_enhance=args.upscaler_face_enhance,
-        
-        image_server_base_url=args.image_server_base_url,
-        image_server_path_prefix=args.image_server_path_prefix,
-        
-        output_dir=args.output_dir,
-        upload_to_server=args.upload_to_server
-    )
-    result = processor.process_cards()
-    processor.save_output(args.output_file, result)
+    try:
+        processor = ScryfallCardProcessor(
+            input_file=args.input_file if not args.fetch_basic_land else None, 
+            frame_type=args.frame, 
+            frame_set=args.frame_set, 
+            legendary_crowns=args.legendary_crowns, 
+            auto_fit_art=args.auto_fit_art,
+            set_symbol_override=args.set_symbol_override,
+            auto_fit_set_symbol=args.auto_fit_set_symbol,
+            api_delay_seconds=max(0, args.api_delay_ms / 1000.0),
+            fetch_basic_land_type=args.fetch_basic_land,
+            art_mode=args.art_mode,
+            set_include=set_include_list,
+            set_exclude=set_exclude_list,
+            
+            upscale_art=args.upscale_art,
+            ilaria_upscaler_base_url=args.ilaria_base_url,
+            upscaler_model_name=args.upscaler_model_name,
+            upscaler_outscale_factor=args.upscaler_outscale_factor,
+            upscaler_denoise_strength=args.upscaler_denoise_strength,
+            upscaler_face_enhance=args.upscaler_face_enhance,
+            
+            image_server_base_url=args.image_server_base_url,
+            image_server_path_prefix=args.image_server_path_prefix,
+            
+            output_dir=args.output_dir,
+            upload_to_server=args.upload_to_server
+        )
+        result = processor.process_cards()
+        processor.save_output(args.output_file, result)
+    except Scry2CCException as e:
+        logger.error(f"A critical error occurred: {e.reason}")
+        if e.detail:
+            logger.error(f"Details: {e.detail}")
+        sys.exit(1)
+    except Exception as e:
+        logger.error(f"An unexpected error occurred: {e}", exc_info=True)
+        sys.exit(1)
 
 if __name__ == "__main__":
     main()

@@ -13,6 +13,7 @@ from scryfall_api_utils import ScryfallAPI
 from color_detector import ColorDetector
 from card_builder import CardBuilder
 from frame_configs import get_frame_config
+from exceptions import ScryfallAPIException, DataProcessingException
 
 logger = logging.getLogger(__name__)
 
@@ -132,7 +133,8 @@ class ScryfallCardProcessor:
                     if card_name: card_names.add(card_name)
             logger.info(f"Loaded {len(card_names)} unique patterns from: {self.input_file}")
             return list(card_names)
-        except Exception as e: logger.error(f"Error reading {self.input_file}: {e}"); return []
+        except Exception as e:
+            raise DataProcessingException(f"Error reading {self.input_file}", str(e))
     
     def get_card_data_by_art_mode(self, card_name: str) -> List[Dict]:
         if self.art_mode == "earliest":
@@ -144,8 +146,7 @@ class ScryfallCardProcessor:
         elif self.art_mode == "all_art":
             return self.scryfall_api.get_all_art_printings(card_name, set_include=self.set_include, set_exclude=self.set_exclude)
         else:
-            logger.error(f"Unknown art mode: {self.art_mode}")
-            return []
+            raise DataProcessingException(f"Unknown art mode: {self.art_mode}", "Please use 'earliest', 'latest', or 'all_art'.")
     
     def process_cards(self) -> List[Dict]:
         items_to_process = [] 
@@ -159,7 +160,8 @@ class ScryfallCardProcessor:
             logger.info(f"Mode: Processing from file: {self.input_file} (art mode: {self.art_mode})")
             for name in self.load_cards_from_file():
                 items_to_process.append({"key_name": name, "name_to_fetch": name, "is_basic_land_fetch_item": False})
-        else: logger.error("No input source."); return []
+        else:
+            raise DataProcessingException("No input source.", "Please provide an input file or use --fetch-basic-land.")
 
         if not items_to_process: logger.warning("No items to process."); return []
             
@@ -171,7 +173,11 @@ class ScryfallCardProcessor:
             if is_basic:
                 scryfall_data_list = [item["card_data_obj"]]
             else:
-                scryfall_data_list = self.get_card_data_by_art_mode(item["name_to_fetch"])
+                try:
+                    scryfall_data_list = self.get_card_data_by_art_mode(item["name_to_fetch"])
+                except ScryfallAPIException as e:
+                    logger.error(f"Scryfall API error for '{item['name_to_fetch']}': {e.reason} - {e.detail}")
+                    continue
             
             if not scryfall_data_list:
                 logger.warning(f"No Scryfall data for '{card_key}', skipping.")
@@ -214,5 +220,6 @@ class ScryfallCardProcessor:
         try:
             with open(output_file, 'w', encoding='utf-8') as f: json.dump(data, f, indent=2)
             logger.info(f"Output saved to {output_file}")
-        except Exception as e: logger.error(f"Error saving output: {e}")
+        except Exception as e:
+            raise DataProcessingException(f"Error saving output to {output_file}", str(e))
 

@@ -6,6 +6,8 @@ import requests
 import time
 from typing import Dict, Optional, List
 
+from exceptions import ScryfallAPIException
+
 logger = logging.getLogger(__name__)
 
 class ScryfallAPI:
@@ -25,11 +27,9 @@ class ScryfallAPI:
             if response.status_code == 200:
                 return response.json()
             else:
-                logger.error(f"Failed to find card '{card_name}': {response.status_code} - {response.text}")
-                return None
+                raise ScryfallAPIException(f"Failed to find card '{card_name}'", f"{response.status_code} - {response.text}")
         except requests.RequestException as e:
-            logger.error(f"Error fetching card '{card_name}' from Scryfall: {e}")
-            return None
+            raise ScryfallAPIException(f"Error fetching card '{card_name}' from Scryfall", str(e))
 
     def get_set_data(self, set_code: str) -> Optional[Dict]:
         """Get detailed information about a set from Scryfall."""
@@ -42,14 +42,11 @@ class ScryfallAPI:
             if response.status_code == 200:
                 return response.json()
             else:
-                logger.error(f"Failed to get set data for '{set_code}': {response.status_code} - {response.text}")
-                return None
+                raise ScryfallAPIException(f"Failed to get set data for '{set_code}'", f"{response.status_code} - {response.text}")
         except requests.RequestException as e:
-            logger.error(f"Error fetching set data for '{set_code}': {e}")
-            return None
+            raise ScryfallAPIException(f"Error fetching set data for '{set_code}'", str(e))
         except Exception as e:
-            logger.error(f"Unexpected error getting set data for '{set_code}': {e}")
-            return None
+            raise ScryfallAPIException(f"Unexpected error getting set data for '{set_code}'", str(e))
 
     def _apply_set_filters(self, query: str, set_include: Optional[List[str]] = None, set_exclude: Optional[List[str]] = None) -> str:
         if set_include:
@@ -104,14 +101,12 @@ class ScryfallAPI:
                 if http_err.response.status_code == 404:
                     logger.warning(f"No cards found for query: {query}")
                 else:
-                    logger.error(f"HTTP error occurred while searching cards (query: '{query}', page: {page_num}): {http_err} - {http_err.response.text}")
+                    raise ScryfallAPIException(f"HTTP error occurred while searching cards (query: '{query}', page: {page_num})", f"{http_err} - {http_err.response.text}")
                 break 
             except requests.RequestException as req_err:
-                logger.error(f"Request error occurred while searching cards (query: '{query}', page: {page_num}): {req_err}")
-                break
+                raise ScryfallAPIException(f"Request error occurred while searching cards (query: '{query}', page: {page_num})", str(req_err))
             except Exception as e:
-                logger.error(f"Unexpected error searching cards (query: '{query}', page: {page_num}): {e}")
-                break
+                raise ScryfallAPIException(f"Unexpected error searching cards (query: '{query}', page: {page_num})", str(e))
         
         if page_num > 2 or (page_num == 2 and not current_search_url): # Log only if multiple pages or only one full page
              logger.info(f"Found {len(all_cards)} total cards across {page_num-1} page(s) for query: {query}")
@@ -122,7 +117,7 @@ class ScryfallAPI:
         try:
             card_data = self.get_card_by_name(card_name)
             if not card_data or 'oracle_id' not in card_data:
-                return None
+                raise ScryfallAPIException(f"Card '{card_name}' not found or missing oracle_id.", "Please check the card name.")
             
             oracle_id = card_data['oracle_id']
             query = f"oracle_id:{oracle_id}"
@@ -142,15 +137,14 @@ class ScryfallAPI:
                 logger.warning(f"No printings found for card '{card_name}' with oracle_id {oracle_id} within the specified set filters.")
                 return None
         except Exception as e:
-            logger.error(f"Unexpected error getting earliest printing for '{card_name}': {e}")
-            return None
+            raise ScryfallAPIException(f"Unexpected error getting earliest printing for '{card_name}'", str(e))
 
     def get_latest_printing(self, card_name: str, set_include: Optional[List[str]] = None, set_exclude: Optional[List[str]] = None) -> Optional[Dict]:
         """Get the latest printing of a card by name, optionally filtered by sets."""
         try:
             card_data = self.get_card_by_name(card_name)
             if not card_data or 'oracle_id' not in card_data:
-                return None
+                raise ScryfallAPIException(f"Card '{card_name}' not found or missing oracle_id.", "Please check the card name.")
             
             oracle_id = card_data['oracle_id']
             query = f"oracle_id:{oracle_id}"
@@ -170,15 +164,14 @@ class ScryfallAPI:
                 logger.warning(f"No printings found for card '{card_name}' with oracle_id {oracle_id} within the specified set filters.")
                 return None
         except Exception as e:
-            logger.error(f"Unexpected error getting latest printing for '{card_name}': {e}")
-            return None
+            raise ScryfallAPIException(f"Unexpected error getting latest printing for '{card_name}'", str(e))
 
     def get_all_art_printings(self, card_name: str, set_include: Optional[List[str]] = None, set_exclude: Optional[List[str]] = None) -> List[Dict]:
         """Get all unique art printings of a card by name, optionally filtered by sets."""
         try:
             card_data = self.get_card_by_name(card_name)
             if not card_data or 'oracle_id' not in card_data:
-                return []
+                raise ScryfallAPIException(f"Card '{card_name}' not found or missing oracle_id.", "Please check the card name.")
             
             oracle_id = card_data['oracle_id']
             query = f"oracle_id:{oracle_id}"
@@ -193,8 +186,7 @@ class ScryfallAPI:
                 logger.warning(f"No printings found for card '{card_name}' with oracle_id {oracle_id} within the specified set filters.")
                 return []
         except Exception as e:
-            logger.error(f"Unexpected error getting all art printings for '{card_name}': {e}")
-            return []
+            raise ScryfallAPIException(f"Unexpected error getting all art printings for '{card_name}'", str(e))
 
     def get_all_printings_of_basic_land(self, land_name: str, set_include: Optional[List[str]] = None, set_exclude: Optional[List[str]] = None) -> List[Dict]:
         """
