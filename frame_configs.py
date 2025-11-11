@@ -7,6 +7,8 @@ import logging
 from seventh_frame import SEVENTH_FRAME
 from eighth_frame import EIGHTH_FRAME
 from m15_frame import M15_FRAME
+from m15regularnew_frame import M15_REGULAR_NEW_FRAME
+from modern_frame import MODERN_FRAME
 try:
     from m15ub_frame import M15UB_FRAME 
     logger_fc = logging.getLogger(__name__) 
@@ -27,6 +29,12 @@ def get_frame_config(frame_type: str):
     elif frame_type == "m15":
         logger_fc.debug("Returning M15_FRAME")
         return M15_FRAME
+    elif frame_type == "m15regularnew":
+        logger_fc.debug("Returning M15_REGULAR_NEW_FRAME")
+        return M15_REGULAR_NEW_FRAME
+    elif frame_type == "modern":
+        logger_fc.debug("Returning MODERN_FRAME")
+        return MODERN_FRAME
     elif frame_type == "m15ub": 
         if M15UB_FRAME is not None:
             logger_fc.debug("Returning M15UB_FRAME")

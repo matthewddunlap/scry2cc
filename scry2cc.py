@@ -26,7 +26,7 @@ def main():
     parser.add_argument('input_file', nargs='?', default=None, 
                         help='Path to the input file containing card names. Ignored if --fetch_basic_land is used.')
     parser.add_argument('--output_file', '-o', help='Path to the output JSON file', default='mtg_cards_output.cardconjurer')
-    parser.add_argument('--frame', '-f', help='Frame type to use', default='seventh', choices=['seventh', '8th', 'm15', 'm15ub']) 
+    parser.add_argument('--frame', '-f', help='Frame type to use', default='seventh', choices=['seventh', '8th', 'm15', 'm15ub', 'm15regularnew', 'modern']) 
     parser.add_argument('--frame_set', '-s', help='Frame set to use (only for seventh)', default='regular')
     parser.add_argument('--legendary_crowns', action='store_true', help='Add legendary crowns for M15/M15UB frames (if applicable)')
     parser.add_argument('--auto_fit_art', action='store_true', help='Automatically calculate art X, Y, and Zoom to fit frame')
