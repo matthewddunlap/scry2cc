@@ -31,6 +31,10 @@ class ColorDetector:
             
         oracle_text = card_data['oracle_text']
         
+        # Check for "mana of any color" which indicates a multicolored land
+        if re.search(r"mana of any .*color", oracle_text, re.IGNORECASE):
+            return [COLOR_CODE_MAP.get('L'), COLOR_CODE_MAP.get('M')]
+        
         mana_positions = []
         # Iterate through WUBRG for mana symbols
         for color_key_scryfall in ['W', 'U', 'B', 'R', 'G']: # Scryfall keys W, U, B, R, G
