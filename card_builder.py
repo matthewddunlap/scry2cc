@@ -923,8 +923,12 @@ class CardBuilder:
             
             display_title_text = basic_land_type_override if is_basic_land_fetch_mode and basic_land_type_override else scryfall_card_name
             
-            rules_text_config = self.frame_config.get("text", {}).get("rules", {})
+            rules_text_config = self.frame_config.get("text", {}).get("rules", {}).copy()
             type_text_config = self.frame_config.get("text", {}).get("type", {})
+
+            FLAVOR_TEXT_Y_OFFSET = 0.025 # Adjust this value as needed
+            if flavor_text_from_scryfall and "y" in rules_text_config:
+                rules_text_config["y"] += FLAVOR_TEXT_Y_OFFSET
     
             rules_font_size = calculate_font_size(final_rules_text, rules_text_config.get("width", 0.8), rules_text_config.get("height", 0.28), rules_text_config.get("size", 0.036))
             type_font_size = calculate_font_size(card_data.get('type_line', ''), type_text_config.get("width", 0.8), type_text_config.get("height", 0.05), type_text_config.get("size", 0.032))
@@ -956,7 +960,7 @@ class CardBuilder:
                     "mana": {**self.frame_config.get("text", {}).get("mana", {}), "text": card_data.get('mana_cost', '')},
                     "title": {**self.frame_config.get("text", {}).get("title", {}), "text": display_title_text},
                     "type": {**self.frame_config.get("text", {}).get("type", {}), "text": card_data.get('type_line', 'Instant'), "size": type_font_size},
-                    "rules": { **self.frame_config.get("text", {}).get("rules", {}), "text": final_rules_text, "size": rules_font_size },
+                    "rules": { **rules_text_config, "text": final_rules_text, "size": rules_font_size },
                     "pt": {**self.frame_config.get("text", {}).get("pt", {}), "text": pt_text_final }
                 },
                 "infoNumber": collector_number_from_scryfall, 
