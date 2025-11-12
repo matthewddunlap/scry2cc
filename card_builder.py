@@ -731,7 +731,10 @@ class CardBuilder:
                     {"name": f"{ttfb_frame_name} Frame", "src": src_frame_border, "masks": [{"src": border_mask, "name": "Border"}]}]
                 )
             elif primary_color_code and land_frame_path_fmt:
-                src_land_primary = self._format_path(land_frame_path_fmt, color_code=primary_color_code)
+                if primary_color_code in ['m', 'l']:
+                    src_land_primary = self._format_path(base_frame_path_fmt, color_code=primary_color_code)
+                else:
+                    src_land_primary = self._format_path(land_frame_path_fmt, color_code=primary_color_code)
                 main_frame_layers.extend([
                     {"name": f"{primary_color_name} Land Frame", "src": src_land_primary, "masks": [{"src": pinline_mask, "name": "Pinline"}]},
                     {"name": f"{ttfb_name} Frame", "src": src_ttfb, "masks": [{"src": type_mask, "name": "Type"}]},
