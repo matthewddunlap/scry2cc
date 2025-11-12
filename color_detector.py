@@ -21,11 +21,10 @@ class ColorDetector:
         If no specific WUBRG colors found, returns [BaseLandInfo].
         Returns empty list if not a land or no oracle text.
         """
+        card_name = card_data.get('name', 'Unknown Card')
         if 'type_line' not in card_data or 'Land' not in card_data['type_line']:
             return [] # Not a land
             
-        # For lands like Strip Mine or Wastes with no WUBRG mana abilities in oracle text,
-        # or if oracle_text is missing (though unlikely for functional lands).
         if 'oracle_text' not in card_data or not card_data['oracle_text']:
             return [COLOR_CODE_MAP.get('L', {'code': 'l', 'name': 'Land'})] 
             
@@ -33,7 +32,9 @@ class ColorDetector:
         
         # Check for "mana of any color" which indicates a multicolored land
         for line in oracle_text.split('\n'):
-            if re.match(r'^{.*}:', line.strip()) and "mana of any color" in line.lower():
+            stripped_line = line.strip()
+            if stripped_line.startswith('{T}') and "mana of any" in stripped_line.lower() and "color" in stripped_line.lower():
+                logger.debug(f"'{card_name}' detected as a gold land based on oracle text.")
                 return [COLOR_CODE_MAP.get('L'), COLOR_CODE_MAP.get('M')]
         
         mana_positions = []
@@ -44,28 +45,6 @@ class ColorDetector:
 
             mana_symbol_scryfall = f"{{{color_key_scryfall}}}" # e.g. {W}, {U}
             
-            # Simple heuristic: check if "Add {COLOR}" exists.
-            # This might need to be more robust for complex mana abilities.
-            # For example, "Add one mana of any color" or conditional additions.
-            # Using regex for "Add {X}" or "{T}: Add {X}" patterns would be more robust.
-            # For now, a simple find of the mana symbol within an "Add" context.
-            
-            # A common pattern is "{T}: Add {U}." or "Add {U}."
-            # We are looking for mana symbols that are *produced*.
-            
-            # Find all occurrences of "Add {COLOR}" pattern.
-            # Example: "Add {U}", "Add {G}{G}", or part of "Add {W} or {U}"
-            # A simple find for "{COLOR}" is okay if we assume any listed symbol in oracle text for a land is producible.
-            # More complex parsing would be needed to be 100% accurate for all edge cases.
-            
-            # Let's look for "{T}: Add {SYMBOL}" or "Add {SYMBOL}" to be more specific
-            # This regex looks for the mana symbol if it's preceded by "Add " or ": Add "
-            # It's a simplified check.
-            #pattern = r"(?:Add\s|\:\s*Add\s)" + re.escape(mana_symbol_scryfall)
-            #if re.search(pattern, oracle_text, re.IGNORECASE):
-            # Look for mana symbols that appear after "Add" in the oracle text
-            # This handles cases like "Add {U}{R}" where both symbols should be detected
-            # First, find all "Add" clauses (everything from "Add" to the next period or semicolon)
             add_clauses = re.findall(r'Add\s[^.;]+', oracle_text, re.IGNORECASE)
             
             # Check if the mana symbol appears in any "Add" clause
@@ -76,10 +55,7 @@ class ColorDetector:
                     break
             
             if found_in_add_clause:
-                # Ensure we only add each color once, even if mentioned multiple times
                 if not any(item['color_key'] == color_key_scryfall for item in mana_positions):
-                    # Find the first actual occurrence to sort by position if needed,
-                    # though order might not be super critical if we just list producing colors.
                     first_occurrence_index = oracle_text.find(mana_symbol_scryfall)
                     mana_positions.append({
                         "position": first_occurrence_index if first_occurrence_index != -1 else float('inf'),
