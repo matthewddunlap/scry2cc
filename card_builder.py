@@ -796,7 +796,7 @@ class CardBuilder:
                 else: final_rules_text = ""
             elif flavor_text_from_scryfall:
                 cleaned_flavor_text = flavor_text_from_scryfall.replace('*', '')
-                final_rules_text = (final_rules_text + "\n{flavor}" if final_rules_text else "{flavor}") + cleaned_flavor_text
+                final_rules_text = (final_rules_text + "{flavor}" if final_rules_text else "{flavor}") + cleaned_flavor_text
                 shows_flavor_bar_for_this_card = True
             
             scryfall_card_name = card_data.get('name', card_name) 
