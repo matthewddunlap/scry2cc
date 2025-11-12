@@ -164,7 +164,7 @@ class CardBuilder:
             viewbox, width_str, height_str = svg_root.get("viewBox"), svg_root.get("width"), svg_root.get("height")
             w, h = None, None
             if viewbox: 
-                try: p = [float(x) for x in re.split(r'[,\\s]+', viewbox.strip())]; w, h = (p[2], p[3]) if len(p) == 4 else (None, None)
+                try: p = [float(x) for x in re.split(r'[,\s]+', viewbox.strip())]; w, h = (p[2], p[3]) if len(p) == 4 else (None, None)
                 except ValueError:
                     raise DataProcessingException(f"Could not parse viewBox: '{viewbox}'", "Please check the SVG file for errors.")
             if w is None and width_str and not width_str.endswith('%'): 
@@ -451,13 +451,7 @@ class CardBuilder:
             if len(color_info) > 1: primary_color_code, primary_color_name = color_info[1]['code'], color_info[1]['name']
             if len(color_info) > 2: secondary_color_code, secondary_color_name = color_info[2]['code'], color_info[2]['name']
             if not primary_color_code and len(color_info) == 1: primary_color_code, primary_color_name = color_info[0]['code'], color_info[0]['name']
-elif isinstance(color_info, dict): 
-            if color_info.get('is_gold') and color_info.get('component_colors'):
-                components = color_info['component_colors']
-                if len(components) >= 1: primary_color_code, primary_color_name = components[0]['code'], components[0]['name']
-                if len(components) >= 2: secondary_color_code, secondary_color_name = components[1]['code'], components[1]['name']
-                ttfb_code, ttfb_name = base_multicolor_code, base_multicolor_name
-            elif color_info.get('code'): primary_color_code, primary_color_name = color_info['code'], color_info['name']; ttfb_code, ttfb_name = primary_color_code, primary_color_name
+
         if not primary_color_code or not ttfb_code: return generated_frames
         
         src_primary = self._format_path(base_frame_path_fmt, color_code=primary_color_code)
@@ -613,12 +607,6 @@ elif isinstance(color_info, dict):
                 if len(color_info) > 2 and isinstance(color_info[2], dict) and 'code' in color_info[2]: secondary_color_code_main, secondary_color_name_main = color_info[2]['code'], color_info[2]['name']
             elif len(color_info) == 1 and isinstance(color_info[0], dict) and 'code' in color_info[0]: primary_color_code_main, primary_color_name_main = color_info[0]['code'], color_info[0]['name']
             else: logger.warning(f"Unexpected land color_info for '{card_name_for_logging}'. Defaulting."); primary_color_code_main, primary_color_name_main = base_codes.get('L'), base_names.get('L', "Land")
-elif isinstance(color_info, dict):
-            if color_info.get('is_gold'): comps = color_info.get('component_colors', []); primary_color_code_main, primary_color_name_main = (comps[0]['code'], comps[0]['name']) if comps else (None,None); secondary_color_code_main, secondary_color_name_main=(comps[1]['code'],comps[1]['name']) if len(comps)>1 else (None,None); ttfb_code,ttfb_name=base_codes.get('M'),base_names.get('M',"Multicolored")
-            elif color_info.get('is_vehicle'): primary_color_code_main, primary_color_name_main = base_codes.get('V'), base_names.get('V', "Vehicle"); ttfb_code, ttfb_name = primary_color_code_main, primary_color_name_main
-            elif color_info.get('is_artifact'): primary_color_code_main, primary_color_name_main = base_codes.get('A'), base_names.get('A', "Artifact"); ttfb_code, ttfb_name = primary_color_code_main, primary_color_name_main
-            elif color_info.get('code') == base_codes.get('C'): primary_color_code_main, primary_color_name_main = base_codes.get('C'), base_names.get('C', "Colorless"); ttfb_code, ttfb_name = primary_color_code_main, primary_color_name_main
-            elif color_info.get('code'): primary_color_code_main, primary_color_name_main = color_info['code'], color_info['name']; ttfb_code, ttfb_name = primary_color_code_main, primary_color_name_main
         if not primary_color_code_main :
             raise FrameGenerationException(f"M15UB MainFrame: Primary color code MAIN missing for '{card_name_for_logging}'.", f"color_info: {color_info}")
         if not ttfb_code: logger.warning(f"M15UB MainFrame: TTFB code missing for '{card_name_for_logging}', falling back to primary. color_info: {color_info}"); ttfb_code, ttfb_name = primary_color_code_main, primary_color_name_main 
@@ -644,263 +632,136 @@ elif isinstance(color_info, dict):
     # --- End of Pasted Frame Building Methods ---
 
     def build_modern_frames(self, color_info: Union[Dict, List], card_data: Dict) -> List[Dict]:
+        generated_frames = []
+        card_name_for_logging = card_data.get('name', 'Unknown Card')
+        is_legendary = 'Legendary' in card_data.get('type_line', '')
 
-            generated_frames = []
+        if self.legendary_crowns and is_legendary:
+            primary_crown_color_code, secondary_crown_color_code = None, None
+            primary_crown_color_name, secondary_crown_color_name = "Legend", "Secondary"
 
-            card_name_for_logging = card_data.get('name', 'Unknown Card')
-
-            is_legendary = 'Legendary' in card_data.get('type_line', '')
-
-            if self.legendary_crowns and is_legendary:
-
-                primary_crown_color_code, secondary_crown_color_code = None, None
-
-                primary_crown_color_name, secondary_crown_color_name = "Legend", "Secondary"
-
-                if isinstance(color_info, dict) and color_info.get('is_gold') and color_info.get('component_colors'):
-
-                    components = color_info['component_colors']
-
-                    if len(components) >= 1: primary_crown_color_code, primary_crown_color_name = components[0]['code'], components[0]['name']
-
-                    if len(components) >= 2: secondary_crown_color_code, secondary_crown_color_name = components[1]['code'], components[1]['name']
-
-                elif isinstance(color_info, dict) and color_info.get('code'): 
-
-                    primary_crown_color_code, primary_crown_color_name = color_info['code'], color_info['name']
-
-                
-
-                if primary_crown_color_code:
-
-                    crown_path_format = self.frame_config.get("legend_crown_path_format") 
-
-                    crown_bounds = self.frame_config.get("legend_crown_bounds")
-
-                    cover_bounds = self.frame_config.get("legend_crown_cover_bounds") 
-
-                    if crown_path_format and crown_bounds and cover_bounds:
-
-                        if secondary_crown_color_code:
-
-                            generated_frames.append({"name": f"{secondary_crown_color_name} Legend Crown", "src": self._format_path(crown_path_format, color_code=secondary_crown_color_code.lower()), "masks": [{"src": "/img/frames/maskRightHalf.png", "name": "Right Half"}], "bounds": crown_bounds})
-
-                        generated_frames.append({"name": f"{primary_crown_color_name} Legend Crown", "src": self._format_path(crown_path_format, color_code=primary_crown_color_code.lower()), "masks": [], "bounds": crown_bounds})
-
-                        generated_frames.append({"name": "Legend Crown Border Cover", "src": "/img/black.png", "masks": [], "bounds": cover_bounds})
-
-                elif is_legendary: logger.warning(f"Could not determine color for M15 legendary crown on '{card_name_for_logging}'.")
-
-    
-
-            if 'power' in card_data and 'toughness' in card_data:
-
-                pt_code, pt_name_prefix = None, "Unknown"
-
-                if isinstance(color_info, dict) and color_info.get('is_gold'): pt_code, pt_name_prefix = COLOR_CODE_MAP['M']['code'], COLOR_CODE_MAP['M']['name']
-
-                elif isinstance(color_info, dict) and color_info.get('code'): pt_code, pt_name_prefix = color_info['code'], color_info['name']
-
-                if pt_code:
-
-                    pt_path = self.build_pt_frame_path(pt_code) 
-
-                    pt_bounds = self.frame_config.get("pt_bounds")
-
-                    if pt_path and pt_bounds and "/error_path" not in pt_path: generated_frames.append({"name": f"{pt_name_prefix} Power/Toughness", "src": pt_path, "masks": [], "bounds": pt_bounds})
-
+            if isinstance(color_info, dict) and color_info.get('is_gold') and color_info.get('component_colors'):
+                components = color_info['component_colors']
+                if len(components) >= 1: primary_crown_color_code, primary_crown_color_name = components[0]['code'], components[0]['name']
+                if len(components) >= 2: secondary_crown_color_code, secondary_crown_color_name = components[1]['code'], components[1]['name']
+            elif isinstance(color_info, dict) and color_info.get('code'): 
+                primary_crown_color_code, primary_crown_color_name = color_info['code'], color_info['name']
             
+            if primary_crown_color_code:
+                crown_path_format = self.frame_config.get("legend_crown_path_format") 
+                crown_bounds = self.frame_config.get("legend_crown_bounds")
+                cover_bounds = self.frame_config.get("legend_crown_cover_bounds") 
 
-            main_frame_layers = []; base_frame_path_fmt = self.frame_config.get("frame_path_format"); mask_path_fmt = self.frame_config.get("mask_path_format")
+                if crown_path_format and crown_bounds and cover_bounds:
+                    if secondary_crown_color_code:
+                        generated_frames.append({"name": f"{secondary_crown_color_name} Legend Crown", "src": self._format_path(crown_path_format, color_code=secondary_crown_color_code.lower()), "masks": [{"src": "/img/frames/maskRightHalf.png", "name": "Right Half"}], "bounds": crown_bounds})
+                    generated_frames.append({"name": f"{primary_crown_color_name} Legend Crown", "src": self._format_path(crown_path_format, color_code=primary_crown_color_code.lower()), "masks": [], "bounds": crown_bounds})
+                    generated_frames.append({"name": "Legend Crown Border Cover", "src": "/img/black.png", "masks": [], "bounds": cover_bounds})
+            elif is_legendary: logger.warning(f"Could not determine color for M15 legendary crown on '{card_name_for_logging}'.")
 
-            land_frame_path_fmt = self.frame_config.get("land_frame_path_format")
+        if 'power' in card_data and 'toughness' in card_data:
+            pt_code, pt_name_prefix = None, "Unknown"
+            if isinstance(color_info, dict) and color_info.get('is_gold'): pt_code, pt_name_prefix = COLOR_CODE_MAP['M']['code'], COLOR_CODE_MAP['M']['name']
+            elif isinstance(color_info, dict) and color_info.get('code'): pt_code, pt_name_prefix = color_info['code'], color_info['name']
+            if pt_code:
+                pt_path = self.build_pt_frame_path(pt_code) 
+                pt_bounds = self.frame_config.get("pt_bounds")
+                if pt_path and pt_bounds and "/error_path" not in pt_path: generated_frames.append({"name": f"{pt_name_prefix} Power/Toughness", "src": pt_path, "masks": [], "bounds": pt_bounds})
 
-            main_frame_mask_src = self.frame_config.get("frame_mask_name_for_main_frame_layer"); main_border_mask_src = self.frame_config.get("border_mask_name_for_main_frame_layer")
+        main_frame_layers = []; base_frame_path_fmt = self.frame_config.get("frame_path_format"); mask_path_fmt = self.frame_config.get("mask_path_format")
+        land_frame_path_fmt = self.frame_config.get("land_frame_path_format")
+        main_frame_mask_src = self.frame_config.get("frame_mask_name_for_main_frame_layer"); main_border_mask_src = self.frame_config.get("border_mask_name_for_main_frame_layer")
+        if not all([base_frame_path_fmt, mask_path_fmt, main_frame_mask_src, main_border_mask_src]): return generated_frames
 
-            if not all([base_frame_path_fmt, mask_path_fmt, main_frame_mask_src, main_border_mask_src]): return generated_frames
-
-    
-
-            primary_color_code, primary_color_name = None, "Unknown"; secondary_color_code, secondary_color_name = None, None
-
-            base_multicolor_code = COLOR_CODE_MAP['M']['code']; base_multicolor_name = COLOR_CODE_MAP['M']['name']
-
-            ttfb_code, ttfb_name = None, None 
-
-                        is_land = isinstance(color_info, list)
-
-                        if is_land:
-
-                            ttfb_frame_code, ttfb_frame_name = COLOR_CODE_MAP['L']['code'], COLOR_CODE_MAP['L']['name']
-
-                            if len(color_info) > 1 and color_info[1]['code'] == 'm':
-
-                                ttfb_code, ttfb_name = COLOR_CODE_MAP['M']['code'], COLOR_CODE_MAP['M']['name']
-
-                            else:
-
-                                ttfb_code, ttfb_name = COLOR_CODE_MAP['L']['code'], COLOR_CODE_MAP['L']['name']
-
-                            
-
-                            if len(color_info) > 1: primary_color_code, primary_color_name = color_info[1]['code'], color_info[1]['name']
-
-                            if len(color_info) > 2: secondary_color_code, secondary_color_name = color_info[2]['code'], color_info[2]['name']
-
-                            if not primary_color_code and len(color_info) == 1: primary_color_code, primary_color_name = color_info[0]['code'], color_info[0]['name']
-
-                        elif isinstance(color_info, dict): 
-
-                            if color_info.get('is_gold') and color_info.get('component_colors'):
-
-                                components = color_info['component_colors']
-
-                                if len(components) >= 1: primary_color_code, primary_color_name = components[0]['code'], components[0]['name']
-
-                                if len(components) >= 2: secondary_color_code, secondary_color_name = components[1]['code'], components[1]['name']
-
-                                ttfb_code, ttfb_name = base_multicolor_code, base_multicolor_name
-
-                            elif color_info.get('code'): primary_color_code, primary_color_name = color_info['code'], color_info['name']; ttfb_code, ttfb_name = primary_color_code, primary_color_name
-
-                        
-
-                        if not primary_color_code or not ttfb_code: return generated_frames
-
-                        
-
-                        src_primary = self._format_path(base_frame_path_fmt, color_code=primary_color_code)
-
-                        src_secondary = self._format_path(base_frame_path_fmt, color_code=secondary_color_code) if secondary_color_code else None
-
-                        src_ttfb = self._format_path(base_frame_path_fmt, color_code=ttfb_code)
-
-                        pinline_mask = self._format_path(mask_path_fmt, mask_name="pinline")
-
-                        type_mask = self._format_path(mask_path_fmt, mask_name="type")
-
-                        title_mask = self._format_path(mask_path_fmt, mask_name="title")
-
-                        rules_mask = self._format_path(mask_path_fmt, mask_name="rules")
-
-                        frame_mask = self._format_path(mask_path_fmt, mask_name="frame")
-
-                        border_mask = self._format_path(mask_path_fmt, mask_name="border")
-
+        primary_color_code, primary_color_name = None, "Unknown"; secondary_color_code, secondary_color_name = None, None
+        base_multicolor_code = COLOR_CODE_MAP['M']['code']; base_multicolor_name = COLOR_CODE_MAP['M']['name']
+        ttfb_code, ttfb_name = None, None 
+        
+        is_land = isinstance(color_info, list)
+        if is_land:
+            ttfb_frame_code, ttfb_frame_name = COLOR_CODE_MAP['L']['code'], COLOR_CODE_MAP['L']['name']
+            if len(color_info) > 1 and color_info[1]['code'] == 'm':
+                ttfb_code, ttfb_name = COLOR_CODE_MAP['M']['code'], COLOR_CODE_MAP['M']['name']
+            else:
+                ttfb_code, ttfb_name = COLOR_CODE_MAP['L']['code'], COLOR_CODE_MAP['L']['name']
             
-
-                        if is_land:
-
-                            src_frame_border = self._format_path(base_frame_path_fmt, color_code=ttfb_frame_code)
-
-                            if secondary_color_code and land_frame_path_fmt:
-
-                                src_land_secondary = self._format_path(land_frame_path_fmt, color_code=secondary_color_code)
-
-                                src_land_primary = self._format_path(land_frame_path_fmt, color_code=primary_color_code)
-
-                                main_frame_layers.extend([
-
-                                    {"name": f"{secondary_color_name} Land Frame", "src": src_land_secondary, "masks": [{"src": pinline_mask, "name": "Pinline"}, {"src": "/img/frames/maskRightHalf.png", "name": "Right Half"}]},
-
-                                    {"name": f"{primary_color_name} Land Frame", "src": src_land_primary, "masks": [{"src": pinline_mask, "name": "Pinline"}]},
-
-                                    {"name": f"{ttfb_name} Frame", "src": src_ttfb, "masks": [{"src": type_mask, "name": "Type"}]},
-
-                                    {"name": f"{ttfb_name} Frame", "src": src_ttfb, "masks": [{"src": title_mask, "name": "Title"}]},
-
-                                    {"name": f"{secondary_color_name} Land Frame", "src": src_land_secondary, "masks": [{"src": rules_mask, "name": "Rules"}, {"src": "/img/frames/maskRightHalf.png", "name": "Right Half"}]},
-
-                                    {"name": f"{primary_color_name} Land Frame", "src": src_land_primary, "masks": [{"src": rules_mask, "name": "Rules"}]},
-
-                                    {"name": f"{ttfb_frame_name} Frame", "src": src_frame_border, "masks": [{"src": frame_mask, "name": "Frame"}]},
-
-                                    {"name": f"{ttfb_frame_name} Frame", "src": src_frame_border, "masks": [{"src": border_mask, "name": "Border"}]}]
-
-                                )
-
-                            elif primary_color_code and land_frame_path_fmt:
-
-                                src_land_primary = self._format_path(land_frame_path_fmt, color_code=primary_color_code)
-
-                                main_frame_layers.extend([
-
-                                    {"name": f"{primary_color_name} Land Frame", "src": src_land_primary, "masks": [{"src": pinline_mask, "name": "Pinline"}]},
-
-                                    {"name": f"{ttfb_name} Frame", "src": src_ttfb, "masks": [{"src": type_mask, "name": "Type"}]},
-
-                                    {"name": f"{ttfb_name} Frame", "src": src_ttfb, "masks": [{"src": title_mask, "name": "Title"}]},
-
-                                    {"name": f"{primary_color_name} Land Frame", "src": src_land_primary, "masks": [{"src": rules_mask, "name": "Rules"}]},
-
-                                    {"name": f"{ttfb_frame_name} Frame", "src": src_frame_border, "masks": [{"src": frame_mask, "name": "Frame"}]},
-
-                                    {"name": f"{ttfb_frame_name} Frame", "src": src_frame_border, "masks": [{"src": border_mask, "name": "Border"}]}]
-
-                                )
+            if len(color_info) > 1: primary_color_code, primary_color_name = color_info[1]['code'], color_info[1]['name']
+            if len(color_info) > 2: secondary_color_code, secondary_color_name = color_info[2]['code'], color_info[2]['name']
+            if not primary_color_code and len(color_info) == 1: primary_color_code, primary_color_name = color_info[0]['code'], color_info[0]['name']
+        else:
+            # This part is for non-land cards, which was missing
+            if isinstance(color_info, dict):
+                if color_info.get('is_gold'):
+                    primary_color_code, primary_color_name = COLOR_CODE_MAP['M']['code'], COLOR_CODE_MAP['M']['name']
+                    ttfb_code, ttfb_name = primary_color_code, primary_color_name
+                    if color_info.get('component_colors'):
+                        components = color_info['component_colors']
+                        if len(components) >= 1: primary_color_code, primary_color_name = components[0]['code'], components[0]['name']
+                        if len(components) >= 2: secondary_color_code, secondary_color_name = components[1]['code'], components[1]['name']
 
                 else:
+                    primary_color_code, primary_color_name = color_info.get('code'), color_info.get('name')
+                    ttfb_code, ttfb_name = primary_color_code, primary_color_name
 
-                    main_frame_layers.extend([
+        if not primary_color_code or not ttfb_code: return generated_frames
+        
+        src_primary = self._format_path(base_frame_path_fmt, color_code=primary_color_code)
+        src_secondary = self._format_path(base_frame_path_fmt, color_code=secondary_color_code) if secondary_color_code else None
+        src_ttfb = self._format_path(base_frame_path_fmt, color_code=ttfb_code)
+        pinline_mask = self._format_path(mask_path_fmt, mask_name="pinline")
+        type_mask = self._format_path(mask_path_fmt, mask_name="type")
+        title_mask = self._format_path(mask_path_fmt, mask_name="title")
+        rules_mask = self._format_path(mask_path_fmt, mask_name="rules")
+        frame_mask = self._format_path(mask_path_fmt, mask_name="frame")
+        border_mask = self._format_path(mask_path_fmt, mask_name="border")
 
-                        {"name": f"{ttfb_name} Frame", "src": src_ttfb, "masks": [{"src": pinline_mask, "name": "Pinline"}]},
-
-                        {"name": f"{ttfb_name} Frame", "src": src_ttfb, "masks": [{"src": type_mask, "name": "Type"}]},
-
-                        {"name": f"{ttfb_name} Frame", "src": src_ttfb, "masks": [{"src": title_mask, "name": "Title"}]},
-
-                        {"name": f"{ttfb_name} Frame", "src": src_ttfb, "masks": [{"src": rules_mask, "name": "Rules"}]},
-
-                        {"name": f"{ttfb_name} Frame", "src": src_ttfb, "masks": [{"src": frame_mask, "name": "Frame"}]},
-
-                        {"name": f"{ttfb_name} Frame", "src": src_ttfb, "masks": [{"src": border_mask, "name": "Border"}]}]
-
-                    )
-
-            elif secondary_color_code and src_secondary and "/error_path" not in src_secondary: 
-
+        if is_land:
+            src_frame_border = self._format_path(base_frame_path_fmt, color_code=ttfb_frame_code)
+            if secondary_color_code and land_frame_path_fmt:
+                src_land_secondary = self._format_path(land_frame_path_fmt, color_code=secondary_color_code)
+                src_land_primary = self._format_path(land_frame_path_fmt, color_code=primary_color_code)
                 main_frame_layers.extend([
-
-                    {"name": f"{secondary_color_name} Frame", "src": src_secondary, "masks": [{"src": pinline_mask, "name": "Pinline"}, {"src": "/img/frames/maskRightHalf.png", "name": "Right Half"}]},
-
-                    {"name": f"{primary_color_name} Frame", "src": src_primary, "masks": [{"src": pinline_mask, "name": "Pinline"}]},
-
+                    {"name": f"{secondary_color_name} Land Frame", "src": src_land_secondary, "masks": [{"src": pinline_mask, "name": "Pinline"}, {"src": "/img/frames/maskRightHalf.png", "name": "Right Half"}]},
+                    {"name": f"{primary_color_name} Land Frame", "src": src_land_primary, "masks": [{"src": pinline_mask, "name": "Pinline"}]},
                     {"name": f"{ttfb_name} Frame", "src": src_ttfb, "masks": [{"src": type_mask, "name": "Type"}]},
-
                     {"name": f"{ttfb_name} Frame", "src": src_ttfb, "masks": [{"src": title_mask, "name": "Title"}]},
-
-                    {"name": f"{secondary_color_name} Frame", "src": src_secondary, "masks": [{"src": rules_mask, "name": "Rules"}, {"src": "/img/frames/maskRightHalf.png", "name": "Right Half"}]},
-
-                    {"name": f"{primary_color_name} Frame", "src": src_primary, "masks": [{"src": rules_mask, "name": "Rules"}]},
-
-                    {"name": f"{ttfb_name} Frame", "src": src_ttfb, "masks": [{"src": frame_mask, "name": "Frame"}]},
-
-                    {"name": f"{ttfb_name} Frame", "src": src_ttfb, "masks": [{"src": border_mask, "name": "Border"}]}]
-
+                    {"name": f"{secondary_color_name} Land Frame", "src": src_land_secondary, "masks": [{"src": rules_mask, "name": "Rules"}, {"src": "/img/frames/maskRightHalf.png", "name": "Right Half"}]},
+                    {"name": f"{primary_color_name} Land Frame", "src": src_land_primary, "masks": [{"src": rules_mask, "name": "Rules"}]},
+                    {"name": f"{ttfb_frame_name} Frame", "src": src_frame_border, "masks": [{"src": frame_mask, "name": "Frame"}]},
+                    {"name": f"{ttfb_frame_name} Frame", "src": src_frame_border, "masks": [{"src": border_mask, "name": "Border"}]}]
                 )
-
-            else: 
-
+            elif primary_color_code and land_frame_path_fmt:
+                src_land_primary = self._format_path(land_frame_path_fmt, color_code=primary_color_code)
                 main_frame_layers.extend([
-
-                    {"name": f"{primary_color_name} Frame", "src": src_primary, "masks": [{"src": pinline_mask, "name": "Pinline"}]},
-
+                    {"name": f"{primary_color_name} Land Frame", "src": src_land_primary, "masks": [{"src": pinline_mask, "name": "Pinline"}]},
                     {"name": f"{ttfb_name} Frame", "src": src_ttfb, "masks": [{"src": type_mask, "name": "Type"}]},
-
                     {"name": f"{ttfb_name} Frame", "src": src_ttfb, "masks": [{"src": title_mask, "name": "Title"}]},
-
-                    {"name": f"{primary_color_name} Frame", "src": src_primary, "masks": [{"src": rules_mask, "name": "Rules"}]},
-
-                    {"name": f"{ttfb_name} Frame", "src": src_ttfb, "masks": [{"src": frame_mask, "name": "Frame"}]},
-
-                    {"name": f"{ttfb_name} Frame", "src": src_ttfb, "masks": [{"src": border_mask, "name": "Border"}]}]
-
+                    {"name": f"{primary_color_name} Land Frame", "src": src_land_primary, "masks": [{"src": rules_mask, "name": "Rules"}]},
+                    {"name": f"{ttfb_frame_name} Frame", "src": src_frame_border, "masks": [{"src": frame_mask, "name": "Frame"}]},
+                    {"name": f"{ttfb_frame_name} Frame", "src": src_frame_border, "masks": [{"src": border_mask, "name": "Border"}]}]
                 )
-
-            generated_frames.extend(main_frame_layers)
-
-            return generated_frames
-
+        elif secondary_color_code and src_secondary and "/error_path" not in src_secondary: 
+            main_frame_layers.extend([
+                {"name": f"{secondary_color_name} Frame", "src": src_secondary, "masks": [{"src": pinline_mask, "name": "Pinline"}, {"src": "/img/frames/maskRightHalf.png", "name": "Right Half"}]},
+                {"name": f"{primary_color_name} Frame", "src": src_primary, "masks": [{"src": pinline_mask, "name": "Pinline"}]},
+                {"name": f"{ttfb_name} Frame", "src": src_ttfb, "masks": [{"src": type_mask, "name": "Type"}]},
+                {"name": f"{ttfb_name} Frame", "src": src_ttfb, "masks": [{"src": title_mask, "name": "Title"}]},
+                {"name": f"{secondary_color_name} Frame", "src": src_secondary, "masks": [{"src": rules_mask, "name": "Rules"}, {"src": "/img/frames/maskRightHalf.png", "name": "Right Half"}]},
+                {"name": f"{primary_color_name} Frame", "src": src_primary, "masks": [{"src": rules_mask, "name": "Rules"}]},
+                {"name": f"{ttfb_name} Frame", "src": src_ttfb, "masks": [{"src": frame_mask, "name": "Frame"}]},
+                {"name": f"{ttfb_name} Frame", "src": src_ttfb, "masks": [{"src": border_mask, "name": "Border"}]}]
+            )
+        else: 
+            main_frame_layers.extend([
+                {"name": f"{primary_color_name} Frame", "src": src_primary, "masks": [{"src": pinline_mask, "name": "Pinline"}]},
+                {"name": f"{ttfb_name} Frame", "src": src_ttfb, "masks": [{"src": type_mask, "name": "Type"}]},
+                {"name": f"{ttfb_name} Frame", "src": src_ttfb, "masks": [{"src": title_mask, "name": "Title"}]},
+                {"name": f"{primary_color_name} Frame", "src": src_primary, "masks": [{"src": rules_mask, "name": "Rules"}]},
+                {"name": f"{ttfb_name} Frame", "src": src_ttfb, "masks": [{"src": frame_mask, "name": "Frame"}]},
+                {"name": f"{ttfb_name} Frame", "src": src_ttfb, "masks": [{"src": border_mask, "name": "Border"}]}]
+            )
+        generated_frames.extend(main_frame_layers)
+        return generated_frames
     
     def build_card_data(self, card_name: str, card_data: Dict, color_info,
                             is_basic_land_fetch_mode: bool = False,
@@ -1012,7 +873,7 @@ elif isinstance(color_info, dict):
     
                 # 3. Upscale if requested
                 if self.upscale_art and original_art_bytes_for_pipeline and self.ilaria_upscaler_base_url:
-                    upscaled_dir = f"{sanitized_card_name(self.upscaler_model_name)}-{self.upscaler_outscale_factor}x"
+                    upscaled_dir = f"{sanitize_for_filename(self.upscaler_model_name)}-{self.upscaler_outscale_factor}x"
                     upscaled_filename_check = f"{sanitized_card_name}_{set_code_sanitized}_{collector_number_sanitized}.png"
                     expected_upscaled_url = f"{self.image_server_base_url.rstrip('/')}{self.image_server_path_prefix}/{upscaled_dir}/{upscaled_filename_check}"
                     
